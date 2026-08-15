@@ -1,0 +1,13 @@
+# Extra dependencies for this harness, beyond llmlingua's own
+# install_requires (transformers, accelerate, torch, tiktoken, nltk, numpy
+# -- see ../../setup.py). Install this repo's llmlingua itself from source
+# (`pip install -e ../..` from this directory) rather than from PyPI, so
+# we're testing this fork's code.
+openai>=1.0
+rank_bm25
+sentence-transformers
+modal
+
+# `nltk.sent_tokenize` (used by the bm25/sentbert sentence-level baselines)
+# needs the punkt tokenizer data once:
+#   python -m nltk.downloader punkt

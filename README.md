@@ -18,6 +18,21 @@
 
 https://github.com/microsoft/LLMLingua/assets/30883354/eb0ea70d-6d4c-4aa7-8977-61f94bb87438
 
+## Fork notes (this repository)
+
+Personal fork for a blog-post experiment comparing LongLLMLingua's two-pass
+contrastive-perplexity token scorer against a one-pass query→context
+attention scorer, at matched reader token budgets on NaturalQuestions
+multi-doc QA. Not affiliated with the upstream Microsoft project beyond
+being a fork of it -- see upstream's README below for LLMLingua itself.
+
+- Orientation notes: [`NOTES.md`](./NOTES.md)
+- Running lab notebook: [`FINDINGS.md`](./FINDINGS.md)
+- Harness code: [`experiments/attention_compression/`](./experiments/attention_compression)
+
+**Cumulative Modal + API spend so far: $0.00** (no runs yet -- updated after
+every approved run; see `FINDINGS.md` for the log)
+
 ## News
 - 🍩 [24/12/13] We are excited to announce the release of our KV cache-centric analysis work, [SCBench](https://aka.ms/SCBench), which evaluates long-context methods from a KV cache perspective.
 - 👘 [24/09/16] We are pleased to announce the release of our KV cache offloading work, [RetrievalAttention](https://aka.ms/RetrievalAttention), which accelerates long-context LLM inference via vector retrieval.
