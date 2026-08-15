@@ -1,17 +1,23 @@
 # FINDINGS
 
-Chronological lab notebook for the attention-vs-contrastive-perplexity
-prompt compression experiment (background in [`NOTES.md`](./NOTES.md);
+Chronological lab notebook for a personal blog-post experiment comparing
+LongLLMLingua's two-pass contrastive-perplexity token scorer against a
+one-pass query→context attention scorer, at matched reader token budgets on
+NaturalQuestions multi-doc QA. Not affiliated with the upstream Microsoft
+project beyond being a fork of it. Background in [`NOTES.md`](./NOTES.md);
 harness code in
-[`experiments/attention_compression/`](./experiments/attention_compression)).
+[`experiments/attention_compression/`](./experiments/attention_compression).
 
 Numbers are reported honestly, not tuned to look good -- this is a personal
-blog-post experiment, not a SOTA attempt. If the attention scorer scores
+tinkering experiment, not a SOTA attempt. If the attention scorer scores
 lower than LongLLMLingua, that's a valid, reportable result.
 
 Every entry should be config-labeled: model, chosen layer (once relevant),
 budget, reader, benchmark/slice -- so a number is traceable without having
 to guess what settings produced it.
+
+**Cumulative Modal + API spend so far: $0.00** (no runs yet -- updated after
+every approved run)
 
 ## Log
 
