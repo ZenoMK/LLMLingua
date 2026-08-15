@@ -22,7 +22,7 @@ scripts that make network calls refuse to run without an explicit
 
 ```bash
 pip install -e ../..                 # this fork's llmlingua, from source
-pip install -r requirements.txt      # openai, rank_bm25, sentence-transformers, modal
+pip install -r requirements.txt      # openai, rank_bm25, sentence-transformers, modal, + metrics.py's deps
 python -m nltk.downloader punkt      # needed by the bm25/sentbert sentence-level baselines
 export OPENAI_API_KEY=...            # required by reader.py
 ```
@@ -52,7 +52,7 @@ export OPENAI_API_KEY=...            # required by reader.py
 |---|---|
 | `config.py` | Every locked setting -- reader, compressor backbones, pipeline flags, budgets, benchmark, sample sizes. Source of truth. |
 | `data.py` | Loads the NQ gold-at-position-10 20-doc set via `nelson-liu/lost-in-the-middle`'s own prompt builder. |
-| `metrics.py` | `best_subspan_em`, vendored from `experiments/llmlingua2/evaluation/metrics.py` (lighter-weight copy, see its docstring). |
+| `metrics.py` | Re-exports `best_subspan_em` from `experiments/llmlingua2/evaluation/metrics.py` (sys.path trick, no logic duplicated -- see its docstring for the dependency cost of that choice). |
 | `budgets.py` | Token counting in the reader's tokenizer (tiktoken), achieved-vs-target ratio reporting. |
 | `reader.py` | OpenAI reader wrapper + the free model-availability check. |
 | `compress.py` | One wrapper per comparison row (`longllmlingua`, `bm25`, `sentbert`; `attention` stubbed for Step 3), all flags sourced from `config.py`. |

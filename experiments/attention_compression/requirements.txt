@@ -8,6 +8,16 @@ rank_bm25
 sentence-transformers
 modal
 
+# Pulled in transitively by metrics.py, which imports best_subspan_em from
+# experiments/llmlingua2/evaluation/metrics.py rather than duplicating it --
+# that module's other metric functions (qa_f1_score, rouge_score, ...) need
+# these at import time even though we only call best_subspan_em.
+evaluate
+jieba
+fuzzywuzzy
+rouge
+regex
+
 # `nltk.sent_tokenize` (used by the bm25/sentbert sentence-level baselines)
 # needs the punkt tokenizer data once:
 #   python -m nltk.downloader punkt

@@ -1,40 +1,21 @@
-# Vendored from experiments/llmlingua2/evaluation/metrics.py (same repo) --
-# just best_subspan_em and the SQuAD-style normalizer it depends on.
+# Re-exports best_subspan_em from experiments/llmlingua2/evaluation/metrics.py
+# (same repo) instead of duplicating its logic. That module isn't an
+# installed package -- it's a sibling script directory, same convention as
+# the rest of experiments/ -- so it isn't importable by dotted path; this
+# adds it to sys.path the same way its own scripts assume a cwd/path setup
+# to reach their neighbors.
 #
-# Copied rather than imported: that module's top-level imports (`evaluate`,
-# `jieba`, `fuzzywuzzy`, `rouge`) pull in heavy deps needed by its other
-# metric functions (qa_f1_score, rouge_score, ...) but not by this one. The
-# original uses the third-party `regex` module for the article-stripping
-# regex; swapped for stdlib `re` here since the pattern (`\b(a|an|the)\b`)
-# doesn't use anything `re` can't do.
-import re
-import string
-from typing import List
+# Cost of not duplicating: importing that module runs its other metric
+# functions' top-level imports too (`evaluate`, `jieba`, `fuzzywuzzy`,
+# `rouge`, `regex`), even though we only use best_subspan_em. Those are
+# listed in requirements.txt.
+import sys
+from pathlib import Path
 
+_LLMLINGUA2_EVAL_DIR = Path(__file__).resolve().parents[1] / "llmlingua2" / "evaluation"
+if str(_LLMLINGUA2_EVAL_DIR) not in sys.path:
+    sys.path.insert(0, str(_LLMLINGUA2_EVAL_DIR))
 
-def normalize_answer(s: str) -> str:
-    """Normalization from the SQuAD evaluation script."""
+from metrics import best_subspan_em  # noqa: E402
 
-    def remove_articles(text):
-        return re.sub(r"\b(a|an|the)\b", " ", text)
-
-    def white_space_fix(text):
-        return " ".join(text.split())
-
-    def remove_punc(text):
-        exclude = set(string.punctuation)
-        return "".join(ch for ch in text if ch not in exclude)
-
-    def lower(text):
-        return text.lower()
-
-    return white_space_fix(remove_articles(remove_punc(lower(s))))
-
-
-def best_subspan_em(prediction: str, ground_truths: List[str]) -> float:
-    normalized_prediction = normalize_answer(prediction)
-    for ground_truth in ground_truths:
-        normalized_ground_truth = normalize_answer(ground_truth)
-        if normalized_ground_truth.lower() in normalized_prediction.lower():
-            return 1.0
-    return 0.0
+__all__ = ["best_subspan_em"]
