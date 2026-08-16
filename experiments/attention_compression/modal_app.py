@@ -4,12 +4,12 @@
 # records between the two jobs, and across dev iterations, so re-running
 # the reader doesn't require re-running compression (and vice versa).
 #
-# THIS IS A STUB. Nothing here is deployed or run -- `modal run` /
-# `modal deploy` are not invoked anywhere in this repo automatically, and
-# won't be until a specific Modal run gets its own go-ahead per the
-# project's working agreement. Treat the exact API calls here (Volume,
-# Secret, Image methods) as unverified until tested against a real `modal`
-# install -- finalize alongside the first approved run.
+# Deployment (`modal deploy`) is not invoked anywhere in this repo
+# automatically -- functions here only run when explicitly invoked (`modal
+# run ...`), and that still needs a specific per-run go-ahead per the
+# project's working agreement. compress_on_gpu/read_on_gpu below are still
+# stubs; modal_smoke_test.py is the first real wiring, added alongside the
+# 2026-08-16 approved smoke test.
 import modal
 
 app = modal.App("attention-compression-experiment")
@@ -17,11 +17,20 @@ app = modal.App("attention-compression-experiment")
 volume = modal.Volume.from_name("attention-compression-artifacts", create_if_missing=True)
 ARTIFACTS_DIR = "/artifacts"
 
-# HF_TOKEN needs to be available in-container to pull the gated compressor/
-# reader backbones -- assumes a Modal secret named "huggingface" holding it
-# (`modal secret create huggingface HF_TOKEN=...`), unverified until we set
-# that up for the first real run.
+# Created manually: `modal secret create huggingface HF_TOKEN=...` (done
+# 2026-08-16, from a cached `huggingface-cli login` token -- never passed
+# through this codebase or this conversation).
 hf_secret = modal.Secret.from_name("huggingface")
+
+# REPO_ROOT here is this dev machine's checkout -- add_local_dir bakes/
+# mounts these into the image at build/run time, so the container runs
+# whatever's on disk at whichever commit this file was invoked from. No
+# separate publish step, but also no independent pin -- fine for iterating
+# on a personal experiment; revisit if reproducibility across time matters
+# later (e.g. pip-installing a tagged commit instead).
+import pathlib
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 base_image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -42,10 +51,8 @@ base_image = (
         "regex",
     )
     .run_commands("python -m nltk.downloader punkt")
-    # TODO(first-run): install this repo's llmlingua/ into the image --
-    # decide editable-mount vs. built-wheel-from-this-commit when we wire
-    # the first real run, so the image is pinned to a specific commit of
-    # this fork rather than drifting.
+    .add_local_dir(str(REPO_ROOT / "llmlingua"), remote_path="/root/repo/llmlingua")
+    .add_local_dir(str(REPO_ROOT / "experiments"), remote_path="/root/repo/experiments")
 )
 
 # A10G assumed sufficient for 7-8B inference in bf16 (short sequences, no
