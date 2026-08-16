@@ -1,62 +1,53 @@
-# 2-3 example smoke test, mirroring examples/RAG.ipynb end to end.
+# 2-3 example smoke test running the full two-job pipeline end to end in
+# one process: compression phase (LongLLMLingua, one budget), then reading
+# phase (Llama-3.1-8B-Instruct) -- with the compressor freed before the
+# reader loads, same GPU-memory discipline compress_job.py / read_job.py
+# use as separate Modal containers, just sequential here for a quick check.
 #
-# Purpose: confirm this repo's llmlingua==0.2.2 actually installs and runs
-# (PromptCompressor loads the compressor backbone, compress_prompt runs with
-# the locked LongLLMLingua flags) and that the OpenAI reader is reachable --
-# BEFORE committing to the full 2,655-example fidelity run. Run this first;
-# see check_reader_availability.py for an even cheaper pre-check.
+# Purpose: confirm this repo's llmlingua==0.2.2 installs and runs, and that
+# the reader loads and generates, BEFORE committing to the internal-
+# consistency fidelity check or the full method sweep. Run
+# check_model_access.py first (even cheaper, no GPU needed).
 #
-# COST: this loads meta-llama/Llama-2-7b-chat-hf (compute cost -- presumably
-# on Modal, see modal_app.py) and makes n_examples real OpenAI chat-
-# completion calls (small $ cost, gpt-3.5-turbo-0613 pricing). Get a
-# specific go-ahead with the estimated cost before running -- don't run this
-# from "the plan was approved," per the project's working agreement.
+# COST: loads meta-llama/Llama-2-7b-chat-hf (compressor) and then
+# meta-llama/Llama-3.1-8B-Instruct (reader) -- both gated, both real GPU
+# compute, presumably on Modal. No API cost anywhere now -- see FINDINGS.md
+# for the GPU-hour estimate. Get a specific go-ahead before running.
 #
 # Usage (only after approval for this specific run):
 #   python smoke_test.py --n 3 --budget 2x --i-have-approval
 import argparse
 import json
 
-from llmlingua import PromptCompressor
-
-import budgets
-import compress
+import compress_job
 import config
 import data
-import metrics
-import reader
+import read_job
+from budgets import count_reader_tokens
+from compress import compress_full_context
 
 
 def run_smoke_test(n_examples: int = 3, budget_name: str = "2x"):
     examples = data.load_position10(limit=n_examples)
-    target_token = config.TOKEN_BUDGETS[budget_name]
+    origin_tokens_by_idx = {
+        ex.idx: count_reader_tokens(compress_full_context(ex.context, ex.instruction, ex.question))
+        for ex in examples
+    }
 
-    print(
-        f"Loaded {len(examples)} examples. Loading compressor "
-        f"({config.LONGLLMLINGUA_COMPRESSOR_MODEL})..."
+    print("Compression phase: loading LongLLMLingua compressor...")
+    records = compress_job.run_compression(
+        rows=["longllmlingua"],
+        budgets_list=[budget_name],
+        examples=examples,
+        origin_tokens_by_idx=origin_tokens_by_idx,
     )
-    compressor = PromptCompressor(model_name=config.LONGLLMLINGUA_COMPRESSOR_MODEL)
+    print(f"Compressed {len(records)} (example, budget) pairs. Compressor freed.")
 
-    results = []
-    for ex in examples:
-        comp = compress.compress_longllmlingua(
-            compressor, ex.context, ex.instruction, ex.question, target_token
-        )
-        report = budgets.budget_report(budget_name, comp["origin_tokens"], comp["compressed_tokens"])
-        reader_resp = reader.answer_question(comp["compressed_prompt"])
-        em = metrics.best_subspan_em(reader_resp.answer, ex.answers)
-        row = {
-            "idx": ex.idx,
-            **report,
-            "reader_answer": reader_resp.answer,
-            "gold_answers": ex.answers,
-            "best_subspan_em": em,
-            "reader_prompt_tokens_billed": reader_resp.prompt_tokens,
-            "reader_completion_tokens_billed": reader_resp.completion_tokens,
-        }
-        results.append(row)
-        print(json.dumps(row, indent=2))
+    print("Reading phase: loading reader...")
+    results = read_job.run_reading(records)
 
+    for r in results:
+        print(json.dumps(r, indent=2))
     return results
 
 
@@ -72,8 +63,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.i_have_approval:
         raise SystemExit(
-            "Refusing to run: this loads a 7B model and calls the OpenAI "
-            "API for real. Pass --i-have-approval only after getting a "
+            "Refusing to run: this loads two gated 7-8B models and runs "
+            "real generation. Pass --i-have-approval only after getting a "
             "specific go-ahead for this run, per the project's working "
             "agreement."
         )

@@ -2,35 +2,39 @@
 #
 # Every script in this directory imports from here instead of hard-coding
 # these values, so a config change shows up as one diff instead of scattered
-# edits across scripts. Provenance for each decision is in NOTES.md and in
-# the PR/commit history; changes to this file go through a PR like anything
-# else.
+# edits across scripts. Provenance for each decision is in NOTES.md/FINDINGS.md
+# and in the PR/commit history; changes to this file go through a PR like
+# anything else.
 #
-# Locked by user review on 2026-08-15, in response to NOTES.md's four open
-# questions.
+# Settings locked by user review on 2026-08-15 (in response to NOTES.md's
+# four open questions), then revised 2026-08-16: fully open-weight pipeline,
+# no OpenAI/paid API anywhere -- see FINDINGS.md for that pivot's reasoning.
 
 from dataclasses import dataclass
 from typing import Optional
 
 # ---------------------------------------------------------------------------
-# Reader: the model that answers the (compressed) prompt. This is what "API
-# cost" means throughout the project, and what achieved-vs-target token
-# ratios are measured against.
+# Reader: the model that answers the (compressed) prompt. Local, open-weight
+# -- no paid API anywhere in this pipeline. This is what achieved-vs-target
+# token ratios are measured against, and (via GPU time) what "cost" means
+# now that there's no per-token API bill.
 # ---------------------------------------------------------------------------
 
-READER_MODEL = "gpt-3.5-turbo-0613"
-READER_TEMPERATURE = 0.0
+READER_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+READER_TEMPERATURE = 0.0  # enforced structurally via greedy decoding (do_sample=False), not passed as a generate() kwarg
 READER_MAX_OUTPUT_TOKENS = 100  # matches examples/RAG.ipynb / lost-in-the-middle convention
-READER_TOKENIZER_ENCODING_MODEL = "gpt-3.5-turbo-0613"  # tiktoken.encoding_for_model() argument
 
-# gpt-3.5-turbo-0613 is an old snapshot and may be deprecated on any given
-# OpenAI account. MUST run check_reader_availability.py (cheap: models.list,
-# not billed) before any run that depends on this model. If it's gone: stop
-# and ask before substituting a newer snapshot -- accepting drift from the
-# paper's published numbers is the user's call, not an automatic fallback.
-# The -16k-0613 variant is deliberately not used as a fallback here: the
-# paper only reaches for it when the prompt exceeds 4k tokens, and our
-# compressed NQ prompts (budgets below) are always well under that.
+# Decision (delegated to the harness build, 2026-08-16): Llama-3.1-8B-Instruct
+# over Qwen2.5-7B-Instruct. Reasoning: it's gated on HF (meta-llama org), but
+# we're already accepting that same org's license for
+# LONGLLMLINGUA_COMPRESSOR_MODEL below, so it's not new friction -- one
+# acceptance covers both. It's also the more current/interesting model to
+# ask "does attention compression work against" than a 2023-era one, and 8B
+# fits comfortably on a single mid-tier GPU in bf16.
+READER_MODEL_FALLBACK = "Qwen/Qwen2.5-7B-Instruct"  # not gated (Apache-2.0) --
+# switch to this ONLY if check_model_access.py or smoke_test.py show
+# READER_MODEL is actually unreachable (token/license problem), and only
+# after flagging that substitution explicitly, not silently.
 
 
 # ---------------------------------------------------------------------------
@@ -55,11 +59,9 @@ ATTENTION_SCORER_MODELS = {
 
 # CRITICAL: reorder is OFF everywhere in this project. Our attention method
 # has no document-reordering step, so LongLLMLingua must also run without
-# one for an apples-to-apples comparison -- otherwise we'd be comparing our
-# no-reorder numbers against their with-reorder numbers, which isn't the
-# paper's own Table 1 per-position (no-reorder) comparison this project is
-# anchored on. "original" is llmlingua's literal "restore input order, don't
-# reorder" value (see control_context_budget in prompt_compressor.py).
+# one for an apples-to-apples comparison. "original" is llmlingua's literal
+# "restore input order, don't reorder" value (see control_context_budget in
+# prompt_compressor.py).
 REORDER_CONTEXT = "original"
 
 # Full LongLLMLingua: coarse context-level ranking (question-conditioned
@@ -74,8 +76,8 @@ LONGLLMLINGUA_KWARGS = dict(
     reorder_context=REORDER_CONTEXT,
     use_sentence_level_filter=False,
     # dynamic_context_compression_ratio intentionally left at its 0.0
-    # default (off) -- revisit only if the Step 2 fidelity check doesn't
-    # land near the paper's Table 1 position-10 number.
+    # default (off) -- revisit only if the internal-consistency check below
+    # shows something off about the compressed condition's quality.
 )
 
 # The one flag that isolates the signal comparison for this whole project:
@@ -109,9 +111,9 @@ BASELINE_ROWS = ["bm25", "sentbert", "longllmlingua"]
 
 
 # ---------------------------------------------------------------------------
-# Token budgets -- measured in the READER's tokenizer (tiktoken), not the
-# scorer's. These are absolute target_token values, matching the paper's NQ
-# table's 2x and 4x compression conditions.
+# Token budgets -- measured in the READER's tokenizer (its own HF
+# tokenizer now, not tiktoken -- see budgets.py). Absolute target_token
+# values, matching the paper's NQ table's 2x and 4x compression conditions.
 # ---------------------------------------------------------------------------
 
 TOKEN_BUDGETS = {
@@ -123,7 +125,10 @@ TOKEN_BUDGETS = {
 # ---------------------------------------------------------------------------
 # Benchmark: NaturalQuestions multi-doc QA (lost-in-the-middle), gold
 # document at position 10 of 20 -- the hardest lost-in-the-middle case, and
-# where the paper's 21.4% headline number is measured.
+# where the paper's 21.4% headline number is measured (that specific number
+# is no longer our comparison target now that we're off their GPT-3.5
+# reader -- see FIDELITY_CHECK below -- but position 10 is still the right
+# slice to stress-test on).
 # ---------------------------------------------------------------------------
 
 # gold_at_9 is 0-indexed in the lost-in-the-middle filenames -> position 10
@@ -131,7 +136,7 @@ TOKEN_BUDGETS = {
 NQ_GOLD_POSITION_FILE = "nq-open-20_total_documents_gold_at_9.jsonl.gz"
 NQ_TOTAL_EXAMPLES = 2655  # size of this specific gold-position file
 
-METRIC = "best_subspan_em"  # see metrics.py (vendored, see that file's docstring)
+METRIC = "best_subspan_em"  # see metrics.py (imported from experiments/llmlingua2/evaluation/metrics.py)
 
 
 # ---------------------------------------------------------------------------
@@ -147,14 +152,29 @@ class RunProtocol:
     label: str
 
 
+# Since we're not on the paper's GPT-3.5 reader, we can't cross-check
+# against their published NQ numbers -- that comparison isn't meaningful
+# across different readers. Replaced with an internal-consistency check on
+# OUR reader: full-context (no compression) vs. LongLLMLingua-compressed
+# vs. zero-shot (no documents at all). Confirms full >= compressed >
+# zero-shot with sane magnitudes before trusting the harness for the real
+# method sweep -- if that ordering is violated, that's a wiring bug, cheap
+# to catch on ~100 examples instead of expensive to discover later.
+FIDELITY_CHECK_ROWS = ["full_context", "longllmlingua", "zero_shot"]
+FIDELITY_CHECK_BUDGET = "2x"  # which budget the "longllmlingua" condition targets; the milder of the two, a reasonable default for a sanity check
+
 FIDELITY_CHECK = RunProtocol(
     name="fidelity_check",
-    n_examples=NQ_TOTAL_EXAMPLES,
-    seed=None,
+    n_examples=100,
+    seed=20260816,  # fixed subset, distinct from METHOD_SWEEP's seed
     label=(
-        "Full 2,655-example set, gold at position 10, reorder off. "
-        "Reproduction sanity check: LongLLMLingua only, against the "
-        "paper's Table 1 position-10 column (not the with-reorder headline)."
+        "Internal-consistency check on a fixed random ~100-example subset, "
+        "gold at position 10, reorder off, reader=Llama-3.1-8B-Instruct: "
+        "full-context vs. LongLLMLingua-compressed (2x budget) vs. "
+        "zero-shot. Confirms full >= compressed > zero-shot ordering with "
+        "sane magnitudes -- this replaces cross-checking against the "
+        "paper's own published (GPT-3.5-reader) numbers, which isn't a "
+        "valid comparison now that we're on a different reader."
     ),
 )
 

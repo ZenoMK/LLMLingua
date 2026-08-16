@@ -94,3 +94,12 @@ def method_sweep_subset(examples: List[NQExample]) -> List[NQExample]:
     rng = random.Random(config.METHOD_SWEEP.seed)
     n = config.METHOD_SWEEP.n_examples
     return rng.sample(examples, min(n, len(examples)))
+
+
+def fidelity_check_subset(examples: List[NQExample]) -> List[NQExample]:
+    """Fixed random subset for the internal-consistency check, per
+    config.FIDELITY_CHECK. Different seed than method_sweep_subset's, so
+    the two protocols don't silently share examples."""
+    rng = random.Random(config.FIDELITY_CHECK.seed)
+    n = config.FIDELITY_CHECK.n_examples
+    return rng.sample(examples, min(n, len(examples)))
