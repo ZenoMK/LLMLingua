@@ -3,10 +3,13 @@
 # -- see ../../setup.py). Install this repo's llmlingua itself from source
 # (`pip install -e ../..` from this directory) rather than from PyPI, so
 # we're testing this fork's code.
-openai>=1.0
+#
+# No OpenAI / paid API client anywhere -- the reader is a local open-weight
+# model now (config.READER_MODEL), loaded the same way as the compressors.
 rank_bm25
 sentence-transformers
 modal
+huggingface_hub  # gated-model access checks (check_model_access.py) + downloads
 
 # Pulled in transitively by metrics.py, which imports best_subspan_em from
 # experiments/llmlingua2/evaluation/metrics.py rather than duplicating it --
@@ -21,3 +24,7 @@ regex
 # `nltk.sent_tokenize` (used by the bm25/sentbert sentence-level baselines)
 # needs the punkt tokenizer data once:
 #   python -m nltk.downloader punkt
+#
+# meta-llama/Llama-2-7b-chat-hf (compressor) and meta-llama/Llama-3.1-8B-
+# Instruct (reader) are both gated on Hugging Face -- accept both licenses
+# and set HF_TOKEN before running anything.
