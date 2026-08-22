@@ -401,3 +401,6 @@ FodyWeavers.xsd
 # build
 build/*
 dist/*
+
+# local virtualenvs (e.g. experiments/attention_compression/.venv)
+.venv/
