@@ -119,3 +119,103 @@ Nothing has executed yet. Next: `check_model_access.py` (confirms
 `HF_TOKEN` can reach all three gated models, free), then the 2-3 example
 smoke test (real GPU cost, needs its own go-ahead), then -- pending that --
 the internal-consistency fidelity check.
+
+### 2026-08-16 -- first real Modal run: the smoke test (succeeded, after 5 bugs)
+
+`check_model_access.py` confirmed all three gated models reachable
+(`meta-llama/Llama-2-7b-chat-hf`, `meta-llama/Llama-3.1-8B-Instruct`,
+`Qwen/Qwen2.5-1.5B-Instruct`) once HF access was granted. Wired the actual
+Modal execution (`modal_smoke_test.py`, plus finishing `modal_app.py`'s
+image spec) and ran `smoke_test.py --n 3 --budget 2x` on Modal for real.
+It took six attempts to get a clean run -- five distinct bugs, none of
+them about the experiment's config/logic, all about getting 2023-era code
+running in a fresh container in 2026. Logging all of them since the fixes
+are now load-bearing:
+
+1. **`ModuleNotFoundError: No module named 'modal_app'`** -- `add_local_dir`
+   puts files on the container's filesystem but doesn't register them as
+   importable modules. `modal_smoke_test.py`'s top-level `from modal_app
+   import ...` runs during container bootstrap, before any in-function
+   `sys.path` fixup gets a chance to run. Fix: `add_local_python_source
+   ("modal_app")`, the API actually built for this.
+2. **`IndexError` from `REPO_ROOT = pathlib.Path(__file__).resolve()
+   .parents[2]`** -- this whole module gets re-imported inside the remote
+   container too (to resolve the invoked function), where
+   `add_local_python_source` places the file at a shallow `/root/
+   modal_app.py` with no `parents[2]`. Harmless in that context (the image
+   is already built by then) as long as it doesn't crash. Fix: guard the
+   `add_local_dir`/`add_local_python_source` calls on whether `REPO_ROOT`
+   looks real (`(REPO_ROOT / "llmlingua").is_dir()`), so the remote
+   re-import is a no-op there instead of an error.
+3. **`ImportError: cannot import name 'best_subspan_em' from partially
+   initialized module 'metrics'`** -- not Modal-specific, a real bug,
+   reproducible with a plain local `import metrics` (no GPU needed, would
+   have been free to catch earlier). `experiments/attention_compression/
+   metrics.py` and `experiments/llmlingua2/evaluation/metrics.py` share a
+   basename; the `sys.path` + bare `import metrics` trick collides with
+   the currently-executing module's own entry in `sys.modules`. Fix:
+   rewrote to load the upstream file via `importlib.util.spec_from_file_
+   location` under a private module name instead -- no `sys.path` mutation,
+   no collision possible.
+4. **`FileNotFoundError: 'git'`** -- `data.py` shells out to `git clone`
+   for the lost-in-the-middle dataset; `debian_slim` doesn't ship `git`.
+   Fix: `.apt_install("git")`.
+5. **`ModuleNotFoundError: No module named 'lost_in_the_middle'`** -- that
+   repo uses a `src/` layout (`src/lost_in_the_middle/`), not a
+   repo-root package; `ensure_repo()` was adding the repo root to
+   `sys.path` instead of `repo_root/src`. Confirmed by cloning the repo
+   and looking, rather than guessing. Also needed `pydantic` added to the
+   image (`prompting.py`'s only real import-time dependency, despite that
+   repo's own `requirements.txt` listing a lot more for scripts we don't
+   use).
+6. **The real one: `transformers`/`llmlingua` KV-cache incompatibility.**
+   `llmlingua/prompt_compressor.py`'s `iterative_compress_prompt` manually
+   slices `past_key_values` as legacy tuples-of-tuples -- 2023-era code
+   that predates `transformers`' `Cache`-object-based KV cache.
+   `setup.py`'s unbounded `transformers>=4.26.0` let pip grab `5.15.0`,
+   which broke the manual unpacking outright (`ValueError: too many values
+   to unpack`). Pinning `<5.0` wasn't enough on its own -- whatever 4.45+
+   version resolved already required `past_key_values` to be a real
+   `Cache` object as *input* to Llama's forward pass
+   (`AttributeError: 'list' object has no attribute 'get_seq_length'`),
+   meaning the legacy-tuple-to-`Cache` auto-conversion shim was already
+   gone there too. Narrowed to `transformers>=4.43,<4.46` (right around
+   when Llama-3.1 architecture support first landed) and that worked --
+   confirmed by a visible deprecation warning ("passing `past_key_values`
+   as a tuple of tuples... deprecated and will be removed in v4.47") that
+   proves the shim is present and doing its job in that window. This pin
+   is now load-bearing and documented in `requirements.txt` and
+   `modal_app.py` -- **do not remove or widen it** without re-verifying
+   against a real run.
+
+**Smoke test result** (`meta-llama/Llama-2-7b-chat-hf` compressor →
+LongLLMLingua @ 2x budget → `meta-llama/Llama-3.1-8B-Instruct` reader →
+`best_subspan_em`), 3 examples from the position-10 NQ set:
+
+| idx | question (gist) | gold | reader answered | EM |
+|---|---|---|---|---|
+| 0 | first Nobel Prize in Physics | Wilhelm Conrad Röntgen | "...awarded to Wilhelm Conrad Röntgen in 1901." | 1.0 |
+| 1 | next Deadpool movie release | May 18, 2018 | rambled about "Deadpool 3" development, never stated the date, hit the 100-token cap | 0.0 |
+| 2 | SW wind timing across Nigeria | till September | "between April and July" | 0.0 |
+
+Token budgets held in all three: target 3,000, compressed to 2,567-2,625
+(achieved ratio 1.06-1.14x against the original ~2,780-2,950-token
+prompts). 1/3 correct on 3 cherry-picked examples is not a quality signal
+-- this run's only job was proving the pipeline works, and it does:
+`llmlingua==0.2.2` installs and runs, both gated Llama models load, full
+LongLLMLingua compression executes, the local open-weight reader
+generates, scoring runs, all on Modal, zero paid APIs.
+
+**Spend:** no exact figure available via the Modal CLI (would need the
+web dashboard). Five of the six attempts failed within seconds, before
+any GPU/download cost; two attempts did real work (one loaded the 7B
+compressor and started compressing before crashing, the full successful
+run downloaded and loaded both a 7B and an 8B model and ran compression +
+generation to completion) -- low single-digit dollars at most for the
+whole debugging session, consistent with the original "well under $1"
+per-clean-run estimate. Worth checking the dashboard directly before
+trusting this number for anything precise.
+
+Next: the internal-consistency fidelity check (`config.FIDELITY_CHECK`) --
+full-context vs. LongLLMLingua-compressed vs. zero-shot on ~100 examples --
+needs its own cost estimate and go-ahead before running.
