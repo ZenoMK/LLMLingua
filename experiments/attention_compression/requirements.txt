@@ -6,6 +6,20 @@
 #
 # No OpenAI / paid API client anywhere -- the reader is a local open-weight
 # model now (config.READER_MODEL), loaded the same way as the compressors.
+#
+# IMPORTANT: override setup.py's unbounded transformers>=4.26.0 with this
+# instead:
+#   transformers>=4.43,<4.46
+# llmlingua/prompt_compressor.py manually slices past_key_values as legacy
+# tuples (iterative_compress_prompt's KV-cache compression) -- 2023-era
+# code that predates transformers' Cache-object-based KV cache. Newer
+# transformers either rejects the legacy tuple outright (AttributeError:
+# 'list' object has no attribute 'get_seq_length') or breaks the manual
+# unpacking (ValueError: too many values to unpack). 4.43-4.46 is the
+# narrow window that's new enough for Llama-3.1/Qwen2.5 architectures
+# while the legacy-tuple-to-Cache auto-conversion shim (deprecated, warns,
+# but still works) is still present. Confirmed working via the 2026-08-16
+# smoke test -- see FINDINGS.md.
 rank_bm25
 sentence-transformers
 modal
@@ -21,9 +35,18 @@ fuzzywuzzy
 rouge
 regex
 
+# data.py clones nelson-liu/lost-in-the-middle at runtime and imports its
+# prompting.py, which needs pydantic -- confirmed by inspecting that repo
+# directly (its own requirements.txt lists a lot more, but the rest is for
+# scripts we don't use).
+pydantic
+
 # `nltk.sent_tokenize` (used by the bm25/sentbert sentence-level baselines)
 # needs the punkt tokenizer data once:
 #   python -m nltk.downloader punkt
+#
+# `git` (a system binary, not pip-installable) is required too -- data.py
+# shells out to `git clone` for the lost-in-the-middle dataset.
 #
 # meta-llama/Llama-2-7b-chat-hf (compressor) and meta-llama/Llama-3.1-8B-
 # Instruct (reader) are both gated on Hugging Face -- accept both licenses

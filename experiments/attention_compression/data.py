@@ -31,14 +31,18 @@ CACHE_DIR = Path(__file__).parent / ".cache" / "lost-in-the-middle"
 
 def ensure_repo() -> Path:
     """Clone lost-in-the-middle if not already cached, and make its
-    `lost_in_the_middle` package importable via sys.path."""
+    `lost_in_the_middle` package importable via sys.path. The package lives
+    under src/ (src-layout, confirmed by inspecting the actual repo -- not
+    at the repo root), so that's what goes on sys.path, not CACHE_DIR
+    itself."""
     if not CACHE_DIR.exists():
         CACHE_DIR.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["git", "clone", "--depth", "1", REPO_URL, str(CACHE_DIR)], check=True
         )
-    if str(CACHE_DIR) not in sys.path:
-        sys.path.insert(0, str(CACHE_DIR))
+    src_dir = str(CACHE_DIR / "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
     return CACHE_DIR
 
 
