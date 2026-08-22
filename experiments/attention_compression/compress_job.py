@@ -38,6 +38,36 @@ ROW_COMPRESSOR_MODEL = {
 }
 
 
+def resolve_protocol(protocol: str):
+    """Returns (config.RunProtocol, is_fidelity_check)."""
+    is_fidelity = protocol == "fidelity_check"
+    return (config.FIDELITY_CHECK if is_fidelity else config.METHOD_SWEEP), is_fidelity
+
+
+def resolve_rows_and_budgets(protocol: str, rows: Optional[List[str]], budgets_list: Optional[List[str]]):
+    _, is_fidelity = resolve_protocol(protocol)
+    rows = rows or (config.FIDELITY_CHECK_ROWS if is_fidelity else config.BASELINE_ROWS)
+    budgets_list = budgets_list or ([config.FIDELITY_CHECK_BUDGET] if is_fidelity else list(config.TOKEN_BUDGETS))
+    return rows, budgets_list
+
+
+def load_examples(protocol: str, limit: Optional[int] = None) -> List["data.NQExample"]:
+    """Loads the example set for `protocol`. Without `limit`, this loads
+    the FULL NQ file first and only THEN takes the protocol's fixed random
+    subset -- loading with limit= up front instead would just take the
+    first N examples in file order (whatever `rng.sample` then does to
+    that already-truncated list isn't a random subset of the full 2,655,
+    it's a shuffle of the first N), silently defeating the "fixed random
+    subset of the full set" every protocol document promises. `limit` is
+    for smoke tests, where taking the first N examples deterministically
+    is exactly what's wanted."""
+    if limit is not None:
+        return data.load_position10(limit=limit)
+    _, is_fidelity = resolve_protocol(protocol)
+    examples = data.load_position10()
+    return data.fidelity_check_subset(examples) if is_fidelity else data.method_sweep_subset(examples)
+
+
 def _compressed_prompt_for_row(compressor, row: str, ex, target_token: Optional[int]) -> str:
     if row == "full_context":
         return compress.compress_full_context(ex.context, ex.instruction, ex.question)
@@ -105,15 +135,9 @@ def main():
     parser.add_argument("--i-have-approval", action="store_true")
     args = parser.parse_args()
 
-    is_fidelity = args.protocol == "fidelity_check"
-    protocol = config.FIDELITY_CHECK if is_fidelity else config.METHOD_SWEEP
-    rows = args.rows or (config.FIDELITY_CHECK_ROWS if is_fidelity else config.BASELINE_ROWS)
-    budgets_list = args.budgets or ([config.FIDELITY_CHECK_BUDGET] if is_fidelity else list(config.TOKEN_BUDGETS))
-
-    n = args.limit if args.limit is not None else protocol.n_examples
-    examples = data.load_position10(limit=n)
-    if args.limit is None:
-        examples = data.fidelity_check_subset(examples) if is_fidelity else data.method_sweep_subset(examples)
+    protocol, _ = resolve_protocol(args.protocol)
+    rows, budgets_list = resolve_rows_and_budgets(args.protocol, args.rows, args.budgets)
+    examples = load_examples(args.protocol, limit=args.limit)
 
     print(f"protocol={protocol.name} rows={rows} budgets={budgets_list} n_examples={len(examples)}")
 

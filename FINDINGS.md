@@ -219,3 +219,50 @@ trusting this number for anything precise.
 Next: the internal-consistency fidelity check (`config.FIDELITY_CHECK`) --
 full-context vs. LongLLMLingua-compressed vs. zero-shot on ~100 examples --
 needs its own cost estimate and go-ahead before running.
+
+### 2026-08-23 -- fidelity check: cost estimate, one real bug, and the real two-job wiring
+
+**Cost estimate**, grounded in the smoke test's actual cold-start numbers
+(compressor load 46s+2s, reader load 47s+3s -- both one-time per job, not
+per-example) plus reasoned per-example timing (compression: ~14-15
+`iterative_size=200` chunks x 2 passes each for `condition_compare=True`
+on the 7B compressor, ~5s/example; generation: ~2,600-token prefill + up
+to 100 decoded tokens, unbatched, on the 8B reader, ~8s/example): 300
+reader generations (100 examples x 3 conditions) + 100 compressions
+(only the `longllmlingua` row needs one) + ~2 min cold starts -> **~50
+min of A10G time, ~$0.90-1.50**.
+
+**Found a real bug before spending anything on it.** `compress_job.py`'s
+CLI loaded examples as `data.load_position10(limit=n)` (n=100) *before*
+calling `fidelity_check_subset`/`method_sweep_subset` -- but those
+functions `rng.sample()` whatever list they're handed, and a 100-example
+list sampled down to 100 is just a shuffle of itself. The "fixed random
+subset of the full 2,655-example set" every protocol docstring promises
+was silently never happening; it would have quietly been "the first 100
+examples in file order" instead. Caught by reading the code, not by
+running it -- fixed by extracting `resolve_protocol` /
+`resolve_rows_and_budgets` / `load_examples` into reusable functions
+(shared by the CLI and the new Modal wiring, so the fix can't drift
+between the two call sites) where `load_examples` now loads the full
+2,655-example file first and only *then* subsets. Verified directly:
+subset of 100 now spans idx 2-2,605 across the file, deterministic given
+the seed.
+
+**Wired the real two-job split for this run**: `compress_on_gpu` /
+`read_on_gpu` in `modal_app.py` (previously `NotImplementedError` stubs)
+now actually run `compress_job`/`read_job`'s logic inside separate Modal
+GPU containers, handing off via the shared Volume (`commit()` after
+writing, `reload()` before reading). New `modal_fidelity_check.py`
+entrypoint orchestrates both calls and checks the actual ordering
+(`full_context >= longllmlingua@2x > zero_shot`) the fidelity check
+exists to validate -- added `read_job.summarize_by_row()` since an
+overall mean EM across all three conditions mixed together can't answer
+that question; needed per-row breakdown. `modal_smoke_test.py` refactored
+to share the same `add_repo_to_path()` helper instead of its own inline
+copy, now that it's the third place needing it.
+
+Dry-run verified (no `--i-have-approval`): both `modal_smoke_test.py` and
+`modal_fidelity_check.py` still build and register cleanly. **Not yet
+run for real** -- given the smoke test needed 6 attempts before a dry run
+that looked clean actually worked, a small `--limit 10` validation run is
+worth doing before committing to the full ~100-example / ~$1-1.50 run.

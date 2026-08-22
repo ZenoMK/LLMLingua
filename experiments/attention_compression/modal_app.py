@@ -111,6 +111,20 @@ if (REPO_ROOT / "llmlingua").is_dir():
 GPU_TYPE = "A10G"
 
 
+def add_repo_to_path() -> None:
+    """Makes this repo's llmlingua/ and the harness scripts importable
+    inside a remote container -- add_local_dir puts the files on disk
+    (see the base_image comment above) but doesn't put them on sys.path.
+    Call this at the top of any @app.function body before importing
+    anything from this repo. Shared by every entry point (smoke test,
+    compress_on_gpu, read_on_gpu) so the two path strings live in one
+    place instead of three copies drifting apart."""
+    import sys
+
+    sys.path.insert(0, "/root/repo")
+    sys.path.insert(0, "/root/repo/experiments/attention_compression")
+
+
 @app.function(
     image=base_image,
     gpu=GPU_TYPE,
@@ -118,14 +132,32 @@ GPU_TYPE = "A10G"
     volumes={ARTIFACTS_DIR: volume},
     secrets=[hf_secret],
 )
-def compress_on_gpu(protocol: str, rows: list, budgets_list: list, out_path: str, limit: int = None) -> None:
+def compress_on_gpu(
+    protocol: str, out_path: str, rows: list = None, budgets_list: list = None, limit: int = None
+) -> int:
     """Runs compress_job.py's logic inside the container, writing records
-    to the shared volume. Never loads the reader. Stubbed -- wiring lands
-    alongside the first approved Modal run."""
-    raise NotImplementedError(
-        "Wire this up alongside the first approved Modal run -- see "
-        "FINDINGS.md and this repo's working agreement (rule 2)."
-    )
+    to the shared volume as JSONL. Never loads the reader. Returns the
+    number of records written."""
+    add_repo_to_path()
+    from pathlib import Path
+
+    import compress
+    import compress_job
+    from budgets import count_reader_tokens
+
+    rows, budgets_list = compress_job.resolve_rows_and_budgets(protocol, rows, budgets_list)
+    examples = compress_job.load_examples(protocol, limit=limit)
+    print(f"protocol={protocol} rows={rows} budgets={budgets_list} n_examples={len(examples)}")
+
+    origin_tokens_by_idx = {
+        ex.idx: count_reader_tokens(compress.compress_full_context(ex.context, ex.instruction, ex.question))
+        for ex in examples
+    }
+    records = compress_job.run_compression(rows, budgets_list, examples, origin_tokens_by_idx)
+    compress_job.save_records(records, Path(out_path))
+    volume.commit()
+    print(f"wrote {len(records)} records to {out_path}")
+    return len(records)
 
 
 @app.function(
@@ -135,12 +167,28 @@ def compress_on_gpu(protocol: str, rows: list, budgets_list: list, out_path: str
     volumes={ARTIFACTS_DIR: volume},
     secrets=[hf_secret],
 )
-def read_on_gpu(in_path: str, out_path: str) -> None:
+def read_on_gpu(in_path: str, out_path: str) -> dict:
     """Runs read_job.py's logic inside the container, loading only the
-    reader. Stubbed -- wiring lands alongside the first approved run, and
-    should add batched generation before it's used for the full method
-    sweep (see read_job.py's docstring)."""
-    raise NotImplementedError(
-        "Wire this up alongside the first approved Modal run -- see "
-        "FINDINGS.md and this repo's working agreement (rule 2)."
-    )
+    reader -- never a compressor. Returns the per-row summary (see
+    read_job.summarize_by_row); the full per-example results are on the
+    volume at out_path.
+
+    NOTE: unbatched, same as read_job.py itself -- fine for the fidelity
+    check's 300 generations, but batch this before the ~4,300-generation
+    method sweep (see read_job.py's docstring)."""
+    add_repo_to_path()
+    from pathlib import Path
+
+    import read_job
+
+    volume.reload()  # pick up whatever compress_on_gpu committed
+    records = read_job.load_records(Path(in_path))
+    print(f"loaded {len(records)} records from {in_path}")
+    results = read_job.run_reading(records)
+    read_job.save_results(results, Path(out_path))
+    volume.commit()
+
+    summary = read_job.summarize_by_row(results)
+    for key, stats in summary.items():
+        print(f"  {key}: n={stats['n']} mean_best_subspan_em={stats['mean_em']:.3f}")
+    return summary

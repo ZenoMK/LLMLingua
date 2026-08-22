@@ -13,15 +13,13 @@
 # agreement):
 #   modal run modal_smoke_test.py --n 3 --budget 2x --i-have-approval
 import json
-import sys
 
-from modal_app import GPU_TYPE, app, base_image, hf_secret
+from modal_app import GPU_TYPE, add_repo_to_path, app, base_image, hf_secret
 
 
 @app.function(image=base_image, gpu=GPU_TYPE, timeout=60 * 30, secrets=[hf_secret])
 def run_smoke_test_remote(n: int, budget: str) -> list:
-    sys.path.insert(0, "/root/repo")
-    sys.path.insert(0, "/root/repo/experiments/attention_compression")
+    add_repo_to_path()
     import smoke_test
 
     return smoke_test.run_smoke_test(n_examples=n, budget_name=budget)
