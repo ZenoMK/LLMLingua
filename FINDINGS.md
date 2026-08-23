@@ -549,3 +549,26 @@ verified yet, and can't be without spending real money: whether
 mechanics actually behave as expected against a real loaded model --
 that needs an actual Modal run. Re-running the same already-approved
 `--limit 5` smoke test next, now covering both models this time.
+
+**Re-ran `--limit 5` after the hook fix: the OOM is gone.** Both models
+completed compression AND evaluation cleanly this time --
+`meta-llama/Llama-2-7b-chat-hf` (`num_hidden_layers=32`,
+`candidate_layers=[15, 20, 23, 31]`) included. `model.model.layers` and
+the hook mechanics work as designed against the real models.
+
+**7B's result echoes 1.5B's exactly**: all four candidate layers tied
+again, this time at 0.6 mean EM for every layer (3/5 correct, identical
+across `[15, 20, 23, 31]`). Two perfect 4-way ties across two different
+models is a strong, consistent signal that n=5 has essentially zero
+power to distinguish candidate layers -- not a fluke of one model's
+specific 5 questions. Reinforces the plan to decide at n=100, not n=5.
+
+Noticed while checking this: `layer_sweep.py`'s two remote calls already
+return the full per-example evaluated records (`reader_answer`,
+`best_subspan_em`, the actual `compressed_prompt` sent, per layer) --
+`modal_layer_sweep.py`'s local entrypoint just wasn't keeping them
+anywhere, only the aggregated summary. Fixed before the n=100 run
+specifically: if that result looks surprising, having the raw per-example
+records to inspect (now written locally to `layer_sweep_output/`, one
+file per model) is the difference between digging in for free versus
+spending again just to reproduce what already ran.

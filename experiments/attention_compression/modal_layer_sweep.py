@@ -24,7 +24,16 @@
 #   modal run modal_layer_sweep.py --limit 5 --i-have-approval             # smoke test first
 #   modal run modal_layer_sweep.py --i-have-approval                       # real run, both models
 #   modal run modal_layer_sweep.py --model-size 1.5b --i-have-approval     # real run, just one model
+#
+# Per-example evaluated records (reader_answer, best_subspan_em, the
+# compressed_prompt actually sent, per layer) get written locally to
+# layer_sweep_output/ -- the two remote calls already return them
+# (evaluate_candidates_remote's "records" key), they just weren't being
+# kept anywhere before. Matters for the n=100 real run specifically: if a
+# result looks surprising, this is what lets us look at what actually got
+# selected/answered without spending again to re-run.
 import json
+from pathlib import Path
 
 import config
 from modal_app import GPU_TYPE, add_repo_to_path, app, base_image, hf_secret
@@ -47,7 +56,7 @@ def evaluate_candidates_remote(records: list) -> dict:
 
 
 @app.local_entrypoint()
-def main(model_size: str = "", limit: int = None, i_have_approval: bool = False):
+def main(model_size: str = "", limit: int = None, out: str = "", i_have_approval: bool = False):
     if not i_have_approval:
         raise SystemExit(
             "Refusing to run: this loads a scorer model then the reader "
@@ -58,6 +67,9 @@ def main(model_size: str = "", limit: int = None, i_have_approval: bool = False)
 
     model_sizes = [model_size] if model_size else list(config.ATTENTION_SCORER_MODELS)
     n = limit if limit is not None else config.LAYER_SWEEP_N_EXAMPLES
+    out_dir = Path(out) if out else Path(__file__).parent / "layer_sweep_output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     chosen = {}
     for size in model_sizes:
         print(f"\n=== sweeping {size} ({config.ATTENTION_SCORER_MODELS[size]}), n_examples={n} ===")
@@ -66,6 +78,12 @@ def main(model_size: str = "", limit: int = None, i_have_approval: bool = False)
         result = evaluate_candidates_remote.remote(records)
         print(json.dumps(result["summary"], indent=2))
         chosen[size] = result["summary"][size]["chosen_layer"]
+
+        out_path = out_dir / f"{size}_n{n}.jsonl"
+        with out_path.open("w") as f:
+            for rec in result["records"]:
+                f.write(json.dumps(rec) + "\n")
+        print(f"wrote {len(result['records'])} per-example records to {out_path}")
 
     print("\nChosen layers (copy into config.ATTENTION_SCORER_LAYERS by hand):")
     print(json.dumps(chosen, indent=2))

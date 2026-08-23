@@ -404,3 +404,8 @@ dist/*
 
 # local virtualenvs (e.g. experiments/attention_compression/.venv)
 .venv/
+
+# experiments/attention_compression run artifacts -- cloned datasets and
+# per-example results, not source code
+experiments/attention_compression/.cache/
+experiments/attention_compression/layer_sweep_output/
