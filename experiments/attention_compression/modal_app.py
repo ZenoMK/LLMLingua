@@ -78,7 +78,17 @@ base_image = modal.Image.debian_slim(python_version="3.10").apt_install(
     "rouge",
     "regex",
     "pydantic",  # nelson-liu/lost-in-the-middle's prompting.py needs this at import time
-).run_commands("python -m nltk.downloader punkt")
+# nltk >=3.9 replaced the old "punkt" pickle resource with a new
+# table-based "punkt_tab" one (security fix -- pickle allowed arbitrary
+# code execution) -- nltk.sent_tokenize() now raises LookupError without
+# it. Caught locally (LookupError: Resource punkt_tab not found) before
+# this ever ran on Modal, where "nltk" is unpinned in pip_install and
+# would have grabbed whatever's current -- almost certainly >=3.9. This
+# would have silently broken every bm25/sentbert baseline row (Step 4)
+# and the attention scorer (Step 3), both of which sentence-tokenize
+# context via nltk, the first time either actually ran. Downloading both
+# resources covers older and newer nltk either way, no version pin needed.
+).run_commands("python -m nltk.downloader punkt punkt_tab")
 
 # add_local_dir/add_local_python_source need REPO_ROOT to be the real repo
 # checkout -- true when this module is first imported locally (to actually

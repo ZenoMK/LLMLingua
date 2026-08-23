@@ -15,8 +15,14 @@ sample sizes -- if a setting needs to change, change it there.
 
 ## Status
 
-Scaffold only. Nothing in this directory has been run yet. Per this
-project's working agreement, every run needs its own specific go-ahead --
+Reproduction harness validated end to end: `check_model_access.py`,
+`smoke_test.py`, and the full internal-consistency fidelity check have all
+run successfully on Modal (see `FINDINGS.md`'s 2026-08-16 and 2026-08-23
+entries for results). Step 3's attention scorer (`attention_scorer.py`) is
+implemented and unit-tested, but not yet wired into `compress_job.py`'s
+row dispatch -- the per-model layer sweep needs to run first (`layer_sweep.py`,
+not written yet) so there's an actual layer to wire in. Per this project's
+working agreement, every run still needs its own specific go-ahead --
 scripts that load a model or run generation refuse to run without an
 explicit `--i-have-approval` flag as a reminder of that.
 
@@ -40,7 +46,7 @@ functions sharing a Volume for the intermediate JSONL.
 ```bash
 pip install -e ../..                 # this fork's llmlingua, from source
 pip install -r requirements.txt      # rank_bm25, sentence-transformers, modal, huggingface_hub, + metrics.py's deps
-python -m nltk.downloader punkt      # needed by the bm25/sentbert sentence-level baselines
+python -m nltk.downloader punkt punkt_tab   # needed by the bm25/sentbert baselines and the attention scorer
 export HF_TOKEN=...                  # needed for the reader and both compressor backbones (all gated on HF)
 ```
 
@@ -53,24 +59,29 @@ require accepting Meta's license on Hugging Face for your account before
 1. **`check_model_access.py`** -- confirms the reader and both compressor
    backbones (see `config.py`) are actually reachable with `HF_TOKEN`.
    Cheap (metadata only, no weights, no GPU), but still a real network call.
-2. **`smoke_test.py`** -- runs 2-3 real examples through both jobs
-   end-to-end (compress with LongLLMLingua, then read with the local
-   reader). Confirms this fork's `llmlingua==0.2.2` installs and runs and
-   that the reader loads and generates, before committing to a bigger run.
-   Real GPU cost -- get that estimated and approved first.
-3. **`compress_job.py --protocol fidelity_check --execute` then
-   `read_job.py --execute`** -- the internal-consistency check: full-context
-   vs. LongLLMLingua-compressed vs. zero-shot, on a fixed ~100-example
-   subset, checking that full >= compressed > zero-shot holds with sane
-   magnitudes. Replaces the earlier plan to reproduce the paper's own
-   published (GPT-3.5-reader) numbers, which isn't a valid comparison now
-   that we're on a different reader -- see `config.FIDELITY_CHECK`.
-4. **`compress_job.py --protocol method_sweep --execute` then
+   **Done** (2026-08-16).
+2. **`smoke_test.py`** / **`modal_smoke_test.py`** -- runs 2-3 real examples
+   through both jobs end-to-end (compress with LongLLMLingua, then read
+   with the local reader). Confirms this fork's `llmlingua==0.2.2` installs
+   and runs and that the reader loads and generates. **Done** (2026-08-16,
+   after fixing five bugs -- see `FINDINGS.md`).
+3. **`modal_fidelity_check.py`** -- the internal-consistency check:
+   full-context vs. LongLLMLingua-compressed vs. zero-shot, on a fixed
+   ~100-example subset, checking that full >= compressed > zero-shot holds
+   with sane magnitudes. Replaces the earlier plan to reproduce the paper's
+   own published (GPT-3.5-reader) numbers, which isn't a valid comparison
+   now that we're on a different reader -- see `config.FIDELITY_CHECK`.
+   **Done** (2026-08-23): `full_context=0.650 >= longllmlingua@2x=0.620 >
+   zero_shot=0.570` -- ordering holds, harness validated.
+4. **Layer sweep** (`layer_sweep.py`, not written yet) -- per-model best
+   attention layer for `attention_scorer.py`, on a handful of examples for
+   each of the two scorer sizes separately. Needed before the attention
+   rows can be wired into `compress_job.py`'s row dispatch.
+5. **`compress_job.py --protocol method_sweep --execute` then
    `read_job.py --execute`** -- all rows (attention 1.5B/7B, LongLLMLingua,
-   bm25, sentbert) x both budgets on the fixed ~400-example subset. Depends
-   on the Step 3 attention scorer, not built yet. `read_job.py` should be
-   batched before this run (see its docstring) -- it's ~4,300 generations
-   unbatched, the dominant cost in the project now.
+   bm25, sentbert) x both budgets on the fixed ~400-example subset.
+   `read_job.py` should be batched before this run (see its docstring) --
+   it's ~4,300 generations unbatched, the dominant cost in the project now.
 
 ## Files
 
@@ -82,8 +93,11 @@ require accepting Meta's license on Hugging Face for your account before
 | `budgets.py` | Token counting in the reader's own HF tokenizer, achieved-vs-target ratio reporting. |
 | `reader.py` | Local HF reader wrapper (load, generate, unload) -- `meta-llama/Llama-3.1-8B-Instruct`, greedy decoding. |
 | `compress.py` | One wrapper per comparison row (`longllmlingua`, `bm25`, `sentbert`; `attention` stubbed for Step 3), plus the `full_context`/`zero_shot` pseudo-conditions used by the fidelity check. |
+| `attention_scorer.py` | Step 3's method: query-to-context attention scoring. Model-independent sentence aggregation/selection (unit-tested); the forward pass itself needs a real model, exercised by `layer_sweep.py` (not written yet). |
+| `test_attention_scorer.py` | Unit tests for `attention_scorer.py`'s model-independent functions -- synthetic inputs, no GPU needed. `python test_attention_scorer.py`. |
 | `compress_job.py` | Compression half of the two-job pipeline. Dry-run cost/scope summary always prints; `--execute` needs `--i-have-approval`. |
-| `read_job.py` | Reading half of the two-job pipeline. Same dry-run/approval gating. |
+| `read_job.py` | Reading half of the two-job pipeline. Same dry-run/approval gating. `summarize_by_row()` gives per-row mean `best_subspan_em`. |
 | `check_model_access.py` | Standalone approval-gated script for order-of-operations step 1. |
-| `smoke_test.py` | Standalone approval-gated script for order-of-operations step 2. |
-| `modal_app.py` | Modal Volume/image/two-function skeleton. Unverified stub -- see its docstring. |
+| `smoke_test.py` / `modal_smoke_test.py` | 2-3 example end-to-end pipeline check (order-of-operations step 2) and its Modal entrypoint. |
+| `modal_fidelity_check.py` | Modal entrypoint for the internal-consistency fidelity check (step 3) -- orchestrates `compress_on_gpu`/`read_on_gpu`, reports the ordering check. |
+| `modal_app.py` | Modal app: shared image/secret/Volume, `compress_on_gpu`/`read_on_gpu` (the real two-job split), `add_repo_to_path()` helper shared by every entrypoint. |

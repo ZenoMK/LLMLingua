@@ -16,8 +16,16 @@ Every entry should be config-labeled: model, chosen layer (once relevant),
 budget, reader, benchmark/slice -- so a number is traceable without having
 to guess what settings produced it.
 
-**Cumulative spend so far: $0.00** (Modal GPU-hours only -- no paid API
-anywhere in the pipeline; updated after every approved run)
+**Cumulative spend so far: ~$2-3** (Modal GPU-hours only, no paid API
+anywhere in the pipeline; updated after every approved run). Precise for
+the full fidelity-check run -- `modal app list` gives real start/stop
+timestamps (2026-08-23 15:52:21 -> 16:24:42 = 32.35 min A10G =~ $0.59),
+cheaper than the ~$0.90-1.50 estimate. Reasoned/rough for the rest
+(2026-08-16 smoke-test debugging session + the 2026-08-23 `--limit 10`
+validation run) -- Modal's ephemeral `modal run` apps don't keep long
+listing history, so exact timestamps for those aren't recoverable after
+the fact; still comfortably under the $50 project cap by a wide margin
+either way.
 
 ## Log
 
@@ -266,3 +274,113 @@ Dry-run verified (no `--i-have-approval`): both `modal_smoke_test.py` and
 run for real** -- given the smoke test needed 6 attempts before a dry run
 that looked clean actually worked, a small `--limit 10` validation run is
 worth doing before committing to the full ~100-example / ~$1-1.50 run.
+
+**`--limit 10` validation run**: succeeded end to end (all 30 records
+compressed and read/scored through the real two-job split with volume
+handoff -- no new bugs). Ordering check technically flagged
+`VIOLATED`: `full_context=0.800 >= longllmlingua@2x=0.600 >
+zero_shot=0.600` -- zero_shot tied the compressed row instead of trailing
+it. Pulled the raw per-example results before treating that as a problem
+(`modal volume get attention-compression-artifacts
+fidelity_check/results.jsonl`): `full_context` and `longllmlingua` agreed
+on 8/10 examples, including agreeing on both examples they got *wrong*
+even with the full uncompressed context (those are just hard questions,
+not a compression failure). The two disagreements canceled out --
+compression happened to drop the key sentence for one example
+(Cyrus/human-rights, where zero-shot guessed right anyway) and preserved
+it for another (eye evolution, where zero-shot didn't know it). All
+answers read as coherent prose referencing the actual documents, nothing
+garbled. Read this as n=10 noise, not a wiring bug, and proceeded to the
+full run rather than iterating on a sample too small to trust.
+
+**Full 100-example run: ordering holds.**
+`full_context=0.650 >= longllmlingua@2x=0.620 > zero_shot=0.570` --
+**OK**. The compression cost is small (0.65 -> 0.62, 3 points) and it
+clearly beats parametric-knowledge-only (0.57), confirming both that the
+compressed prompts retain the information needed to answer and that this
+reader has real headroom above guessing from pretraining alone -- i.e.
+retrieval content is doing real work here, and the harness measures that
+correctly.
+
+Compression stats for the `longllmlingua@2x` row (pulled from the full
+results, not just the printed summary): averaged 2,945 -> 2,556 tokens
+(achieved ratio 1.153x against a 2x/3,000-token target), range 2,310-2,753
+tokens, **0/100 examples exceeded the token budget**.
+
+**This validates the harness end to end.** `full_context`, `longllmlingua`,
+and `zero_shot` all wire up correctly through both Modal jobs; the reader
+answers coherently; scoring and budget accounting are both doing what
+they claim. Next real milestone is Step 3 -- the attention scorer itself
+-- since the reproduction/baseline machinery this was built to validate
+now has a passing sanity check behind it.
+
+### 2026-08-23 -- Step 3, part 1: the attention scorer (no runs)
+
+First real piece of the method itself: `attention_scorer.py`. Per the
+project brief, split from the layer sweep (separate PR, needs a real
+model/GPU/approval) -- this PR is scoring + selection logic only, no
+dataset wiring, no Modal run.
+
+Design decisions made concrete in code:
+- **Layout is `[context tokens][question tokens]`** -- context first is
+  what lets the question tokens' attention run back *over* the context at
+  all, since causal masking only lets a token attend to itself and
+  earlier tokens. No chat template -- this reads the model's raw
+  attention over content, not a template-mediated one; we're not asking
+  it to generate anything.
+- **`attn_implementation="eager"` is required**, not optional -- `sdpa`/
+  `flash_attention_2` don't return attention weights at all,
+  `output_attentions=True` silently gives back `None` for them instead of
+  erroring. Documented loudly in `attention_scorer.py` and `layer_sweep.py`'s
+  future model-loading code needs to remember it, or it'll rediscover
+  this the expensive way (load a 7-8B model on Modal, then get a
+  `None`-attention crash).
+- **Sentence score = mean of its tokens' attention, not sum** -- matches
+  how llmlingua's own sentence-level perplexity scoring works
+  (`granularity="sentence"` is a `loss.mean()`), and avoids just rewarding
+  longer sentences for having more tokens. Unit-tested directly
+  (`test_uses_mean_not_sum_so_longer_sentences_arent_favored`).
+- **Selection overshoots rather than undershoots** the token budget (adds
+  the sentence that crosses the line, then stops) -- same convention
+  llmlingua's own `control_sentence_budget` uses for its bm25/sentbert
+  rows.
+- **Reconstruction preserves original document/sentence order**, never
+  rank order -- consistent with this project's no-reordering rule
+  everywhere else.
+- **Cacheability**: context-then-query layout means the context's KV
+  cache is, in principle, reusable across different queries against the
+  same context (one cacheable pass, vs. LongLLMLingua's two uncacheable
+  ones). This benchmark's NQ examples each have a unique context, so nothing
+  in this harness's data actually exercises that reuse -- it's a
+  structural property of the method, documented honestly as such rather
+  than claimed as something this specific experiment demonstrates.
+
+**Architecture**: split model-dependent (`compute_token_attention` -- the
+real forward pass, needs a GPU) from model-independent
+(`sentences_with_scores`, `select_sentences` -- pure Python) code. Not
+just tidiness: this dev machine's local `torch` install is broken (missing
+`torch.nn`, pre-existing, unrelated to this project) and can't run a real
+forward pass locally regardless, so this split is what made local testing
+possible at all. 7 unit tests in `test_attention_scorer.py`, synthetic
+inputs (a trivial word-level fake tokenizer, hand-computed expected
+scores), no GPU needed -- all passing (`python test_attention_scorer.py`).
+
+**Also fixed a latent bug in already-merged code**, found while checking
+whether `nltk.sent_tokenize` would work in the Modal image for this:
+`modal_app.py` only downloaded the `punkt` nltk resource, but `nltk>=3.9`
+renamed it to `punkt_tab` (a security fix -- the old resource used
+`pickle`, which allows arbitrary code execution). Reproduced locally
+first (`LookupError: Resource punkt_tab not found`) before touching
+Modal. Neither the bm25/sentbert baselines nor anything else in this
+project has ever actually called `nltk.sent_tokenize` in a successful
+run so far (the smoke test and fidelity check only exercise
+`longllmlingua`/`full_context`/`zero_shot`), so this was sitting
+undiscovered in merged code -- would have broken the first bm25/sentbert
+row and this scorer the moment either actually ran. Now downloads both
+`punkt` and `punkt_tab`, covering nltk versions on either side of the
+rename.
+
+Not yet done: the layer sweep (which layer, per scorer model, to read
+attention from) and wiring the scorer into `compress_job.py`'s row
+dispatch -- both need `attention_scorer.py` to exist first, which it now
+does.
