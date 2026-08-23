@@ -41,9 +41,11 @@ regex
 # scripts we don't use).
 pydantic
 
-# `nltk.sent_tokenize` (used by the bm25/sentbert sentence-level baselines)
-# needs the punkt tokenizer data once:
-#   python -m nltk.downloader punkt
+# `nltk.sent_tokenize` (used by the bm25/sentbert sentence-level baselines
+# and the attention scorer) needs tokenizer data once -- both resources,
+# since nltk >=3.9 renamed "punkt" to "punkt_tab" and older versions still
+# want the old name:
+#   python -m nltk.downloader punkt punkt_tab
 #
 # `git` (a system binary, not pip-installable) is required too -- data.py
 # shells out to `git clone` for the lost-in-the-middle dataset.
