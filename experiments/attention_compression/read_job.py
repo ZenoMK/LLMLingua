@@ -57,6 +57,22 @@ def save_results(results: List[dict], out_path: Path) -> None:
             f.write(json.dumps(r) + "\n")
 
 
+def summarize_by_row(results: List[dict]) -> dict:
+    """Mean best_subspan_em per row (e.g. "full_context", "longllmlingua@2x",
+    "zero_shot") plus an overall figure. An overall mean alone can't answer
+    the fidelity check's actual question -- whether full_context >=
+    compressed > zero_shot -- so this is what both the CLI and the Modal
+    wiring report."""
+    by_key = {}
+    for r in results:
+        key = r["row"] if r.get("budget_name") is None else f"{r['row']}@{r['budget_name']}"
+        by_key.setdefault(key, []).append(r["best_subspan_em"])
+    summary = {key: {"n": len(ems), "mean_em": sum(ems) / len(ems)} for key, ems in by_key.items()}
+    all_ems = [r["best_subspan_em"] for r in results]
+    summary["_overall"] = {"n": len(all_ems), "mean_em": sum(all_ems) / len(all_ems) if all_ems else 0.0}
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--in", dest="in_path", type=Path, required=True, help="compress_job.py's output JSONL")
@@ -83,9 +99,10 @@ def main():
 
     results = run_reading(records)
     save_results(results, args.out)
-    n = len(results)
-    mean_em = sum(r["best_subspan_em"] for r in results) / n if n else 0.0
-    print(f"wrote {n} results to {args.out}; mean best_subspan_em={mean_em:.3f}")
+    summary = summarize_by_row(results)
+    print(f"wrote {len(results)} results to {args.out}")
+    for key, stats in summary.items():
+        print(f"  {key}: n={stats['n']} mean_best_subspan_em={stats['mean_em']:.3f}")
 
 
 if __name__ == "__main__":
