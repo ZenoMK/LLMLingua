@@ -107,3 +107,17 @@ def fidelity_check_subset(examples: List[NQExample]) -> List[NQExample]:
     rng = random.Random(config.FIDELITY_CHECK.seed)
     n = config.FIDELITY_CHECK.n_examples
     return rng.sample(examples, min(n, len(examples)))
+
+
+def layer_sweep_subset(examples: List[NQExample]) -> List[NQExample]:
+    """Fixed random subset for the per-model layer sweep, per
+    config.LAYER_SWEEP_N_EXAMPLES/LAYER_SWEEP_SEED. Different seed than
+    the other two subsets, so all three protocols draw independently.
+    Same reasoning as fidelity_check_subset/method_sweep_subset: this
+    must be sampled from the FULL file, not just the first N examples --
+    "first N in file order" isn't guaranteed representative, and unlike a
+    quick smoke-test override, this is the set that actually decides
+    which layer gets used for the rest of the project."""
+    rng = random.Random(config.LAYER_SWEEP_SEED)
+    n = config.LAYER_SWEEP_N_EXAMPLES
+    return rng.sample(examples, min(n, len(examples)))

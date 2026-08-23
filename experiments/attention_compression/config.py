@@ -52,6 +52,30 @@ ATTENTION_SCORER_MODELS = {
     "7b": "meta-llama/Llama-2-7b-chat-hf",
 }
 
+# Per-model layer sweep settings (see layer_sweep.py). ~50/66/75/100%
+# depth candidates, per model independently -- the best layer is
+# model-specific, so no layer gets reused across the two sizes. Budget
+# matches FIDELITY_CHECK's choice of "2x" (the milder of the two budgets,
+# a reasonable default when the point is comparing layers to each other,
+# not stress-testing a tight budget).
+#
+# Deliberately larger than the original brief's "~5 examples" suggestion:
+# a discrete pick among 4 candidate layers, from only 5 examples, risks
+# locking in whichever layer got lucky rather than one that's genuinely
+# better -- there's no later "recheck at full scale" step for this choice
+# the way the fidelity check had (n=10 there was just a smoke test for
+# the harness, not the thing being decided). Plan: smoke-test the
+# pipeline at n=5 (layer_sweep.py's/modal_layer_sweep.py's --limit
+# override) first, then run the real decision at this value if that
+# works -- see FINDINGS.md.
+LAYER_SWEEP_N_EXAMPLES = 100
+LAYER_SWEEP_BUDGET = "2x"
+LAYER_SWEEP_SEED = 20260823  # distinct from FIDELITY_CHECK's/METHOD_SWEEP's seeds -- independent draws
+
+# Filled in by hand from layer_sweep.py's output once it's actually run --
+# empty until then. See FINDINGS.md for the run that populates this.
+ATTENTION_SCORER_LAYERS = {}
+
 
 # ---------------------------------------------------------------------------
 # Compression pipeline settings, per method row

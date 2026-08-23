@@ -384,3 +384,85 @@ Not yet done: the layer sweep (which layer, per scorer model, to read
 attention from) and wiring the scorer into `compress_job.py`'s row
 dispatch -- both need `attention_scorer.py` to exist first, which it now
 does.
+
+### 2026-08-23 -- Step 3, part 2: the layer sweep (no runs)
+
+`layer_sweep.py` + `modal_layer_sweep.py`. For each scorer model
+independently, tries ~4 late-layer candidates (~50/66/75/100% depth,
+computed from the model's own `num_hidden_layers` rather than hardcoded)
+on a fixed 5-example set, and picks whichever layer gives the highest
+mean `best_subspan_em` once its compressed output is fed to the reader --
+"best" means "leads to correct answers," the same criterion the rest of
+this project uses, not an indirect proxy like attention entropy.
+
+**Revised `compute_token_attention`'s signature** (merged in the previous
+PR, but not called from anywhere else yet, so this was the moment to fix
+it): it took a single `layer` and did one forward pass per call. But
+`output_attentions=True` already returns *every* layer's attention
+weights in one pass -- sweeping 4 candidates the old way would have been
+4 fully-redundant forward passes per example for identical underlying
+compute. Now takes `layers: List[int]` and returns `{layer: token_scores}`
+from a single pass.
+
+**Two phases, same one-model-at-a-time discipline as `compress_job.py`/
+`read_job.py`**: `compress_candidates()` loads only the scorer, produces
+every (layer, example) candidate's compressed prompt; `evaluate_candidates()`
+loads only the reader, scores every candidate, and computes the per-model
+argmax layer (`pick_best_layer()`) before returning -- computed wherever
+the records already are (inside the Modal container) rather than shipped
+back to this dev machine to compute locally, since this machine's broken
+local `torch` can't import `compress.py`/`budgets.py` anyway (see below).
+
+**Kept `candidate_layers()` and `pick_best_layer()` locally testable**,
+same reasoning as the scorer itself: moved `layer_sweep.py`'s `budgets`/
+`compress` imports (both transitively need `transformers`/`llmlingua`,
+broken locally) from module level into `compress_candidates()`'s function
+body, so importing the file itself doesn't require a working `torch`.
+7 more unit tests (`test_layer_sweep.py`), all passing -- including
+verifying `candidate_layers(28)` lands on the expected indices, 100%
+depth is always the last valid layer (never out of range), small models
+that collapse two fractions onto the same index get deduped, and
+`pick_best_layer` keeps model sizes independent and breaks ties toward
+the shallower layer (documented behavior, not an accident).
+
+Dry-run verified (no `--i-have-approval`): `modal_layer_sweep.py` builds
+and registers cleanly. **Not yet run for real.**
+
+Also added `config.LAYER_SWEEP_N_EXAMPLES` / `LAYER_SWEEP_BUDGET` (5
+examples at the time, the "2x" budget, matching `FIDELITY_CHECK_BUDGET`'s
+reasoning) and an empty `config.ATTENTION_SCORER_LAYERS` placeholder, to
+be filled in by hand once the sweep actually runs.
+
+**Revised before running anything**: raised `LAYER_SWEEP_N_EXAMPLES` from
+the brief's suggested "~5" to **100**. Picking a permanent layer is a
+discrete choice among 4 candidates, decided once and then locked in for
+the rest of the project -- unlike the fidelity check's n=10 (which was
+just validating the harness works, resolved cleanly at n=100 with no
+consequence either way), there's no later step that rechecks the layer
+choice at scale. n=5 risks locking in whichever layer got lucky on those
+5 questions. Agreed plan: smoke-test the pipeline at n=5 first (`--limit
+5`, cheap, same role the earlier `--limit 10` fidelity-check run played),
+confirm it works end to end, then run the real 100-example decision.
+
+**Also applied the same subset-sampling fix here that `compress_job.py`
+got earlier**: the layer sweep's real run now loads the FULL 2,655-example
+file and takes a seeded random 100-example subset
+(`data.layer_sweep_subset`, its own seed, independent of
+`fidelity_check_subset`/`method_sweep_subset`) rather than just the first
+100 in file order -- "first N" is still what `--limit` gives for the
+cheap smoke test, where determinism matters more than representativeness,
+but the real decision-making run needed the same fix. Verified locally
+(no GPU needed, `data.py` doesn't need `torch`): 100-example subset spans
+idx 10-2,625 across the file, deterministic given the seed, and its
+overlap with the other two subsets (6% with fidelity_check's, 15% with
+method_sweep's) matches what independent random draws from the same pool
+should produce.
+
+**Updated cost estimate for the real (n=100) run**: reader generations
+now dominate even more than before -- 400 per model (100 examples x 4
+layers) x 2 models = 800 total, exceeding the fidelity check's own 300.
+Compression is comparatively cheap (~100 short forward passes per model,
+no generation). Rough total: **~$1.50-3, roughly 2 hours of wall-clock
+A10G time, unbatched** -- comfortably under the $50 cap, but long enough
+to need running in the background rather than watched live. The n=5
+smoke test first is unchanged in cost (~$0.30-0.70, a few minutes).
