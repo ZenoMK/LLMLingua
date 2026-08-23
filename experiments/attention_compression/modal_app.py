@@ -100,18 +100,27 @@ base_image = modal.Image.debian_slim(python_version="3.10").apt_install(
 # register them as importable modules -- that only matters for a plain
 # top-level `import <name>` (like modal_smoke_test.py's `from modal_app
 # import ...`, which runs during container bootstrap, before any
-# in-function sys.path fixups have a chance to run). Learned both of these
-# the hard way: the first real run crash-looped on `ModuleNotFoundError: No
+# in-function sys.path fixups have a chance to run). Learned this three
+# times now: the first real run crash-looped on `ModuleNotFoundError: No
 # module named 'modal_app'` (add_local_dir alone wasn't enough for that
-# import -- add_local_python_source is the API built for it), and the
-# second crashed on IndexError from REPO_ROOT's parents[2] not existing in
-# the remote re-import. This guard fixes both by making the remote
-# re-import a no-op for this part instead of erroring.
+# import -- add_local_python_source is the API built for it); the second
+# crashed on IndexError from REPO_ROOT's parents[2] not existing in the
+# remote re-import (fixed by the guard below); the third crash-looped the
+# exact same way as the first but on `config` this time --
+# modal_layer_sweep.py does `import config` at module level for its local
+# entrypoint's own use, forgetting that the WHOLE FILE (not just the
+# function actually being invoked) gets re-imported remotely too, and
+# `config` wasn't registered the way `modal_app` was. Any current or
+# future modal_*.py entrypoint that imports a harness module at the top
+# level (rather than lazily inside a function body, after
+# add_repo_to_path()) needs that module added here too -- add_repo_to_path()
+# alone doesn't help top-level imports, since it doesn't run until a
+# function body executes, by which point the top-level imports already ran.
 if (REPO_ROOT / "llmlingua").is_dir():
     base_image = (
         base_image.add_local_dir(str(REPO_ROOT / "llmlingua"), remote_path="/root/repo/llmlingua")
         .add_local_dir(str(REPO_ROOT / "experiments"), remote_path="/root/repo/experiments")
-        .add_local_python_source("modal_app")
+        .add_local_python_source("modal_app", "config")
     )
 
 # A10G assumed sufficient for 7-8B inference in bf16 (short sequences, no
