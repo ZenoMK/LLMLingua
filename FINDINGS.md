@@ -16,16 +16,15 @@ Every entry should be config-labeled: model, chosen layer (once relevant),
 budget, reader, benchmark/slice -- so a number is traceable without having
 to guess what settings produced it.
 
-**Cumulative spend so far: ~$2-3** (Modal GPU-hours only, no paid API
-anywhere in the pipeline; updated after every approved run). Precise for
-the full fidelity-check run -- `modal app list` gives real start/stop
-timestamps (2026-08-23 15:52:21 -> 16:24:42 = 32.35 min A10G =~ $0.59),
-cheaper than the ~$0.90-1.50 estimate. Reasoned/rough for the rest
-(2026-08-16 smoke-test debugging session + the 2026-08-23 `--limit 10`
-validation run) -- Modal's ephemeral `modal run` apps don't keep long
-listing history, so exact timestamps for those aren't recoverable after
-the fact; still comfortably under the $50 project cap by a wide margin
-either way.
+**Cumulative spend so far: ~$3.50-5** (Modal GPU-hours only, no paid API
+anywhere in the pipeline; updated after every approved run). Precise
+where `modal app list`'s start/stop timestamps are still available: the
+fidelity check (32.35 min =~ $0.59) and the real n=100 layer sweep
+(58.23 min =~ $1.07). Reasoned/rough for the rest (2026-08-16 smoke-test
+debugging session, the two `--limit 5`/`--limit 10` validation runs) --
+Modal's ephemeral `modal run` apps don't keep long listing history, so
+exact timestamps for those aren't recoverable after the fact; still
+comfortably under the $50 project cap by a wide margin either way.
 
 ## Log
 
@@ -572,3 +571,69 @@ specifically: if that result looks surprising, having the raw per-example
 records to inspect (now written locally to `layer_sweep_output/`, one
 file per model) is the difference between digging in for free versus
 spending again just to reproduce what already ran.
+
+### 2026-08-23 -- the real n=100 layer sweep: layers barely matter, and now we know why
+
+Full run, both models, config-labeled: `Qwen/Qwen2.5-1.5B-Instruct`
+(`num_hidden_layers=28`, candidates `[13, 17, 20, 27]`) and
+`meta-llama/Llama-2-7b-chat-hf` (`num_hidden_layers=32`, candidates
+`[15, 20, 23, 31]`), 100-example seeded random subset
+(`data.layer_sweep_subset`, seed `20260823`), 2x budget (3,000 reader
+tokens), gold at position 10.
+
+**Results:**
+
+| Model | Layer 1 (50%) | Layer 2 (66%) | Layer 3 (75%) | Layer 4 (100%) | Chosen |
+|---|---|---|---|---|---|
+| 1.5B | 13: 0.70 | 17: 0.70 | 20: 0.70 | 27: 0.70 | 13 |
+| 7B | 15: 0.71 | 20: 0.70 | 23: 0.70 | 31: 0.71 | 15 |
+
+Not a fluke of the smoke test's small sample -- at 20x the sample size,
+**the near-total tie held**. 1.5B is a flat, exact tie across all four
+candidates; 7B has two values 0.01 apart, which is noise at n=100 (that's
+a one-example difference). Both chosen values are just the shallowest
+(50%-depth) candidate winning `pick_best_layer`'s documented tie-breaking
+rule, not a real margin of victory.
+
+**Dug into why**, using the per-example records this run's own
+persistence fix produced (`layer_sweep_output/{1.5b,7b}_n100.jsonl`):
+**83-84% of examples produce the literal identical `compressed_prompt`
+regardless of which of the 4 candidate layers is used** -- for both
+models, independently. Where they do differ (the other 16-17%), it's by
+a handful of characters out of ~12,800 -- one sentence swapping near the
+token-budget boundary, not a different selection. Mechanism: sentence
+selection is a *discrete, threshold-based* operation (greedy by score
+until the 3,000-token budget is crossed) -- small attention-score
+differences between two late layers routinely reorder sentences deep in
+the ranking without changing which ones end up on the winning side of the
+cutoff. Late-layer attention patterns being broadly similar to each other
+is itself unsurprising (a fairly standard property of transformer
+representations); what's specific to *this* method is that the
+downstream selection step is largely insensitive to the swaps.
+
+**Reported honestly, not smoothed over**: this means the per-model layer
+sweep (Step 3's own stated design point -- "the best attention layer is
+model-specific") mostly *isn't* doing the discriminating work the
+project brief expected of it, at least for this scorer size range and
+this selection mechanism. Worth keeping in mind for the writeup: the
+chosen layers below are "a reasonable pick among statistically
+indistinguishable options actually tested end-to-end," not "the layer
+that was empirically best." Locked in anyway, since 50% depth is not an
+unreasonable default and there's no principled reason from this data to
+prefer a different one -- `config.ATTENTION_SCORER_LAYERS = {"1.5b": 13,
+"7b": 15}`.
+
+**Operational note**: the 7B compression phase hit three transient CUDA
+allocator warnings (`memory allocation failed with OOM ... `) during this
+run -- not fatal, PyTorch's caching allocator retried and all 400
+candidates compressed successfully, but it's a sign the hook-based fix
+(PR #11), while it works, leaves less headroom on an A10G at n=100 than
+the memory math suggested. Worth watching if this recurs (or escalates to
+fatal) during the larger method sweep in Step 4.
+
+**Spend**: precise this time, from `modal app list`'s start/stop
+timestamps -- 58 min 14 sec total for both models' compress+evaluate
+cycles combined (22:09:38 -> 23:07:52), =~ **$1.07** at A10G rates.
+Faster and cheaper than the ~$1.50-3 / ~2hr planning estimate -- that
+estimate was padded/conservative; actual generation throughput held up
+better than assumed.
