@@ -1,13 +1,20 @@
 # Unit tests for attention_scorer.py's model-INDEPENDENT functions
-# (sentences_with_scores, select_sentences) -- pure Python, synthetic
-# inputs, no GPU/model/tokenizer needed. compute_token_attention (the
-# model-dependent forward pass) isn't covered here; it needs a real model
-# and gets exercised for real in layer_sweep.py instead.
+# (sentences_with_scores, select_sentences, plus the two pure helpers
+# compute_token_attention's hooks rely on) -- pure Python, synthetic
+# inputs, no GPU/model/tokenizer needed. compute_token_attention's actual
+# forward pass isn't covered here; it needs a real model and gets
+# exercised for real in layer_sweep.py instead.
 #
 # Run directly: python test_attention_scorer.py
+import inspect
 import unittest
 
-from attention_scorer import select_sentences, sentences_with_scores
+from attention_scorer import (
+    _bind_kwarg_true,
+    _looks_like_attention_weights,
+    select_sentences,
+    sentences_with_scores,
+)
 
 
 def _word_offsets(text: str):
@@ -107,6 +114,62 @@ class SelectSentencesTest(unittest.TestCase):
         scored = [{"doc_idx": 0, "text": "fifteen chars!!", "score": 1.0}]
         result = select_sentences(scored, target_token=10, count_tokens=len)
         self.assertEqual(result, "fifteen chars!!")
+
+
+# Fake decoder-layer-shaped forward, exercising the exact ambiguity
+# _bind_kwarg_true exists to handle: does the caller pass output_attentions
+# positionally or by keyword? Both are legal Python and transformers'
+# internal calling convention for this isn't part of its public API
+# contract -- these tests don't assume either way, they check both.
+def _fake_layer_forward(hidden_states, attention_mask=None, position_ids=None, output_attentions=False, use_cache=True):
+    return {"output_attentions_received": output_attentions}
+
+
+class BindKwargTrueTest(unittest.TestCase):
+    def test_overrides_keyword_arg(self):
+        sig = inspect.signature(_fake_layer_forward)
+        args, kwargs = ("hidden",), {"output_attentions": False}
+        new_args, new_kwargs = _bind_kwarg_true(sig, args, kwargs, "output_attentions")
+        self.assertTrue(_fake_layer_forward(*new_args, **new_kwargs)["output_attentions_received"])
+
+    def test_overrides_positional_arg(self):
+        sig = inspect.signature(_fake_layer_forward)
+        # output_attentions in the 4th positional slot, per _fake_layer_forward's signature
+        args, kwargs = ("hidden", None, None, False), {}
+        new_args, new_kwargs = _bind_kwarg_true(sig, args, kwargs, "output_attentions")
+        self.assertTrue(_fake_layer_forward(*new_args, **new_kwargs)["output_attentions_received"])
+
+    def test_overrides_when_not_passed_at_all(self):
+        # output_attentions omitted entirely -- apply_defaults() should
+        # still surface it (at its default, False) so it's there to override.
+        sig = inspect.signature(_fake_layer_forward)
+        args, kwargs = ("hidden",), {}
+        new_args, new_kwargs = _bind_kwarg_true(sig, args, kwargs, "output_attentions")
+        self.assertTrue(_fake_layer_forward(*new_args, **new_kwargs)["output_attentions_received"])
+
+    def test_noop_when_signature_lacks_the_kwarg(self):
+        def other_fn(x, y=1):
+            return (x, y)
+
+        sig = inspect.signature(other_fn)
+        args, kwargs = (5,), {}
+        new_args, new_kwargs = _bind_kwarg_true(sig, args, kwargs, "output_attentions")
+        self.assertEqual(other_fn(*new_args, **new_kwargs), (5, 1))  # unchanged, no crash
+
+
+class LooksLikeAttentionWeightsTest(unittest.TestCase):
+    def test_matches_realistic_attention_shape(self):
+        self.assertTrue(_looks_like_attention_weights(4, (1, 32, 2800, 2800)))
+
+    def test_rejects_3d_hidden_states_shape(self):
+        self.assertFalse(_looks_like_attention_weights(3, (1, 2800, 4096)))
+
+    def test_rejects_batch_size_other_than_1(self):
+        self.assertFalse(_looks_like_attention_weights(4, (2, 32, 2800, 2800)))
+
+    def test_rejects_non_square_last_two_dims(self):
+        # e.g. a KV-cache-shaped tensor: [batch, heads, seq, head_dim]
+        self.assertFalse(_looks_like_attention_weights(4, (1, 32, 2800, 128)))
 
 
 if __name__ == "__main__":
