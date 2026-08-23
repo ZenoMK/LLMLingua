@@ -33,9 +33,41 @@
 # context, so that reuse isn't exercised by this harness's data -- it's a
 # structural property of the method, not something this specific
 # experiment demonstrates operationally.
+import inspect
 from typing import Callable, List, Tuple
 
 import nltk
+
+
+def _bind_kwarg_true(sig: inspect.Signature, args: tuple, kwargs: dict, kwarg_name: str):
+    """Pure Python, no torch: rebuilds a call via the target callable's
+    own signature so `kwarg_name` ends up True in the reconstructed
+    (args, kwargs), regardless of whether the ORIGINAL caller passed it
+    positionally or by keyword. Used by compute_token_attention's forward
+    pre-hook to force output_attentions=True for one specific decoder
+    layer without needing to know or assume transformers' internal
+    calling convention for that argument -- deliberately not hardcoded to
+    a positional index, which isn't part of any public API contract and
+    is exactly the kind of thing that silently breaks across versions.
+    Testable on its own (test_attention_scorer.py) with a plain function
+    signature and fake args/kwargs -- no model, no GPU, no torch."""
+    bound = sig.bind_partial(*args, **kwargs)
+    bound.apply_defaults()
+    if kwarg_name in bound.arguments:
+        bound.arguments[kwarg_name] = True
+    return bound.args, bound.kwargs
+
+
+def _looks_like_attention_weights(ndim: int, shape: Tuple[int, ...]) -> bool:
+    """Pure Python, no torch: does an (ndim, shape) pair look like
+    [batch=1, heads, seq_q, seq_k] attention weights? 4D, batch size 1,
+    square in the last two dims. Takes plain dim/shape values (not a
+    tensor) precisely so it's testable without torch -- used to identify
+    which element of a decoder layer's returned tuple is the attention
+    weights by shape rather than a hardcoded index, since exact tuple
+    layout varies with use_cache/output_attentions combinations across
+    transformers versions."""
+    return ndim == 4 and len(shape) == 4 and shape[0] == 1 and shape[-1] == shape[-2]
 
 
 def _sentence_spans(doc_text: str) -> List[Tuple[str, int, int]]:
@@ -152,9 +184,9 @@ def select_sentences(
 def compute_token_attention(model, tokenizer, context: List[str], question: str, layers: List[int]):
     """Model-dependent: the actual forward pass. Requires a real model
     loaded with attn_implementation="eager" -- optimized attention paths
-    (sdpa, flash_attention_2) don't return attention weights at all, and
-    output_attentions=True silently gives back None for them instead of
-    erroring. Not unit-tested here (needs a GPU and real weights); see
+    (sdpa, flash_attention_2) never materialize a full attention matrix at
+    all, so there's nothing to capture from them regardless of technique.
+    Not unit-tested here (needs a GPU and real weights); see
     layer_sweep.py for where this gets exercised for real, and
     test_attention_scorer.py for how the two functions above are tested
     with synthetic inputs instead.
@@ -167,13 +199,45 @@ def compute_token_attention(model, tokenizer, context: List[str], question: str,
     generate anything.
 
     Takes a LIST of layers, not one, and does a single forward pass for
-    all of them: output_attentions=True already returns every layer's
-    attention weights in one pass, so there's no reason to re-run the
-    model once per candidate layer. This matters concretely for
-    layer_sweep.py, which evaluates several candidate layers per example
-    -- re-running the forward pass per layer would be purely-wasted
-    N-times-redundant GPU cost for identical work. Single-layer callers
-    just pass a one-element list and index the result with [layer].
+    all of them -- no reason to re-run the model once per candidate layer
+    for identical work. Single-layer callers just pass a one-element list
+    and index the result with [layer].
+
+    MEMORY: does NOT use the model-level output_attentions=True. That
+    flag has no per-layer selectivity -- every layer computes AND RETAINS
+    its full [heads, seq, seq] attention matrix simultaneously until the
+    whole forward pass returns (the framework accumulates them into a
+    growing tuple as it goes). For a ~3,000-token context on a 32-layer
+    model, that's ~1.15GB/layer x 32 =~ 37GB just for attention, on top
+    of the model weights -- confirmed the hard way with a real
+    CUDA OutOfMemoryError running the 7B scorer on an A10G (24GB), mid-
+    sweep, well before even reaching the last layer. Critically, this
+    isn't specific to requesting many layers: even layers=[27] (one
+    layer) would hit the same wall, since the model computes and retains
+    every OTHER layer's attention too regardless of which ones the caller
+    asked for -- this would have resurfaced identically once the chosen
+    layer got wired into the real method sweep, not just here.
+
+    Fix: leave the model-level call at output_attentions=False (its
+    default -- no accumulation happens, and each layer's transient
+    attention tensor is freed as soon as that layer's own forward
+    returns, so peak memory from attention is O(1) layer, not O(num
+    layers)), and instead use forward hooks scoped to exactly the
+    requested layers: a pre-hook forces output_attentions=True for only
+    that one layer's own call (found via inspect.Signature.bind rather
+    than assuming whether the caller passes it positionally or by
+    keyword -- transformers' internal calling convention for this isn't
+    part of its public API contract and isn't something to hardcode
+    around), and a paired forward hook captures that layer's own
+    attention-weights tensor directly from its return value (identified
+    by shape -- 4D, batch-size-1, square in the last two dims -- rather
+    than a hardcoded tuple index, which also varies with use_cache/
+    output_attentions combinations across versions), reduces it to a
+    per-context-token score immediately, and lets the original GPU tensor
+    get freed. Peak extra memory becomes O(len(layers)), not O(num_hidden_layers)
+    -- comfortably fits even the 7B model on an A10G. use_cache=False on
+    the call itself since this is a one-shot scoring pass, not
+    generation -- no KV cache to reuse afterward.
 
     Returns (context, per-document offset mappings, per-document token
     base indices, {layer: token_scores}) -- everything
@@ -197,19 +261,45 @@ def compute_token_attention(model, tokenizer, context: List[str], question: str,
     n_context = len(context_ids)
 
     input_ids = torch.tensor([context_ids + question_ids], device=model.device)
-    with torch.no_grad():
-        out = model(input_ids, output_attentions=True)
+
+    def _force_output_attentions_true(module, args, kwargs):
+        return _bind_kwarg_true(inspect.signature(module.forward), args, kwargs, "output_attentions")
 
     token_scores_by_layer = {}
-    for layer in layers:
-        layer_attn = out.attentions[layer]
-        if layer_attn is None:
-            raise RuntimeError(
-                "model.attentions is None -- the model wasn't loaded with "
-                'attn_implementation="eager" (sdpa/flash_attention_2 don\'t '
-                "return attention weights)."
-            )
-        query_to_context = layer_attn[0, :, n_context:, :n_context]  # [heads, n_query, n_context]
-        token_scores_by_layer[layer] = query_to_context.mean(dim=(0, 1)).float().cpu().tolist()  # mean over heads AND query positions
+
+    def _make_capture_hook(layer_idx):
+        def hook(module, args, output):
+            items = output if isinstance(output, tuple) else (output,)
+            for item in items:
+                if torch.is_tensor(item) and _looks_like_attention_weights(item.dim(), tuple(item.shape)):
+                    query_to_context = item[0, :, n_context:, :n_context]  # [heads, n_query, n_context]
+                    token_scores_by_layer[layer_idx] = (
+                        query_to_context.mean(dim=(0, 1)).float().cpu().tolist()  # mean over heads AND query positions
+                    )
+                    break
+
+        return hook
+
+    decoder_layers = model.model.layers  # LlamaModel/Qwen2Model convention -- both scorer backbones use it
+    handles = []
+    for layer_idx in layers:
+        handles.append(decoder_layers[layer_idx].register_forward_pre_hook(_force_output_attentions_true, with_kwargs=True))
+        handles.append(decoder_layers[layer_idx].register_forward_hook(_make_capture_hook(layer_idx)))
+
+    try:
+        with torch.no_grad():
+            model(input_ids, output_attentions=False, use_cache=False)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    missing = set(layers) - set(token_scores_by_layer)
+    if missing:
+        raise RuntimeError(
+            f"Failed to capture attention weights for layers {sorted(missing)} -- "
+            'the model likely wasn\'t loaded with attn_implementation="eager" '
+            "(sdpa/flash_attention_2 never materialize a full attention matrix "
+            "to capture, hook or no hook)."
+        )
 
     return context, offset_mappings, doc_token_base, token_scores_by_layer

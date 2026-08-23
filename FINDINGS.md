@@ -466,3 +466,86 @@ no generation). Rough total: **~$1.50-3, roughly 2 hours of wall-clock
 A10G time, unbatched** -- comfortably under the $50 cap, but long enough
 to need running in the background rather than watched live. The n=5
 smoke test first is unchanged in cost (~$0.30-0.70, a few minutes).
+
+### 2026-08-23 -- the n=5 smoke test surfaced a real bug and a real limit
+
+First real run of `modal_layer_sweep.py --limit 5`. Two findings, one
+small and fixed immediately, one substantial:
+
+**`ModuleNotFoundError: No module named 'config'`** -- same root cause,
+third time now, as the original `modal_app` import crash-loop:
+`modal_layer_sweep.py` does `import config` at module level (for its
+local entrypoint's own use), but the *whole file* -- not just whichever
+function is actually being invoked -- gets re-imported remotely to
+resolve which decorated function to call, and `config` wasn't registered
+via `add_local_python_source` the way `modal_app` was. Fixed by
+registering it alongside `modal_app`, and documented the general pattern
+in `modal_app.py`'s comment so it doesn't get rediscovered a fourth time
+by some future `modal_*.py` entrypoint. Shipped separately as its own PR
+(#10) since it's independent of everything else here.
+
+**With that fixed, the 1.5B model ran completely cleanly** -- and the
+result is itself informative: all four candidate layers tied at **exactly
+0.6 mean EM** (3/5 correct, identical for every layer). A perfect 4-way
+tie at n=5 is about as clean a confirmation as you could ask for that 5
+examples has no power to distinguish between layers -- exactly the
+concern that led to the "smoke test at 5, then decide at 100" plan
+rather than trusting n=5 outright.
+
+**The 7B model hit `CUDA OutOfMemoryError`, and it's structural.**
+`output_attentions=True` is a single global flag with no per-layer
+selectivity: requesting it forces the model to compute *and retain* the
+full `[heads, seq, seq]` attention matrix for **all 32 layers
+simultaneously** (~1.15GB each =~ 37GB) on top of the model weights
+(~14GB) -- past the A10G's 24GB. Confirmed this isn't sweep-specific: even
+a single requested layer would hit the same wall, since the model
+computes and retains every *other* layer's attention too regardless of
+what the caller asked for -- meaning this would have resurfaced
+identically the moment the chosen 7B layer got wired into the real
+method sweep, not just here.
+
+Discussed two fixes (bigger GPU vs. properly scoping what gets computed);
+**chose the proper fix** on the reasoning that a fixed-layer real run
+would hit the same wall as the sweep, so "bigger GPU" wasn't actually
+sweep-scoped -- it would mean paying the inflated rate for every 7B
+attention-row example for the rest of the project, not just this one-off
+calibration step.
+
+**Fix**: `compute_token_attention` no longer uses the model-level
+`output_attentions=True` at all. Instead: leave the model call at its
+default (`output_attentions=False`, `use_cache=False` since this is a
+one-shot scoring pass, not generation) -- with no accumulation, each
+layer's transient attention tensor is freed as soon as that layer's own
+forward returns, so baseline peak memory from attention is already just
+O(1) layer. Then use forward hooks scoped to exactly the requested
+layers: a pre-hook forces `output_attentions=True` for only that one
+layer's own call, and a paired forward hook captures that layer's
+attention weights directly from its return value, reduces it to a
+per-context-token score immediately, and lets the GPU tensor get freed.
+Peak extra memory becomes O(len(layers)) -- at most 4 -- not O(32).
+
+Two places this could have been subtly wrong, both made defensive
+instead of assumed:
+- **How the pre-hook overrides `output_attentions`**: doesn't assume
+  whether the caller (transformers' internal per-layer loop) passes it
+  positionally or by keyword -- that calling convention isn't part of
+  transformers' public API contract and isn't something worth hardcoding
+  around. Uses `inspect.Signature.bind_partial` to rebuild the call
+  correctly either way. Extracted as `_bind_kwarg_true`, pure Python, and
+  unit-tested against both calling conventions plus the
+  no-kwarg-passed-at-all case (4 tests).
+- **How the capture hook finds the attention-weights tensor** in a decoder
+  layer's returned tuple: not a hardcoded index (exact tuple layout
+  varies with `use_cache`/`output_attentions` combinations across
+  versions), but a shape match -- 4D, batch-size-1, square in the last
+  two dims. Extracted as `_looks_like_attention_weights`, pure Python,
+  unit-tested against the realistic shape plus three near-miss shapes
+  that should NOT match (3D hidden states, batch>1, a KV-cache-shaped
+  non-square tensor) (4 tests).
+
+8 new unit tests total, all passing, no GPU needed. What's genuinely NOT
+verified yet, and can't be without spending real money: whether
+`model.model.layers` (the decoder stack attribute path) and the hook
+mechanics actually behave as expected against a real loaded model --
+that needs an actual Modal run. Re-running the same already-approved
+`--limit 5` smoke test next, now covering both models this time.
