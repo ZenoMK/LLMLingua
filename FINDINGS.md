@@ -313,3 +313,74 @@ answers coherently; scoring and budget accounting are both doing what
 they claim. Next real milestone is Step 3 -- the attention scorer itself
 -- since the reproduction/baseline machinery this was built to validate
 now has a passing sanity check behind it.
+
+### 2026-08-23 -- Step 3, part 1: the attention scorer (no runs)
+
+First real piece of the method itself: `attention_scorer.py`. Per the
+project brief, split from the layer sweep (separate PR, needs a real
+model/GPU/approval) -- this PR is scoring + selection logic only, no
+dataset wiring, no Modal run.
+
+Design decisions made concrete in code:
+- **Layout is `[context tokens][question tokens]`** -- context first is
+  what lets the question tokens' attention run back *over* the context at
+  all, since causal masking only lets a token attend to itself and
+  earlier tokens. No chat template -- this reads the model's raw
+  attention over content, not a template-mediated one; we're not asking
+  it to generate anything.
+- **`attn_implementation="eager"` is required**, not optional -- `sdpa`/
+  `flash_attention_2` don't return attention weights at all,
+  `output_attentions=True` silently gives back `None` for them instead of
+  erroring. Documented loudly in `attention_scorer.py` and `layer_sweep.py`'s
+  future model-loading code needs to remember it, or it'll rediscover
+  this the expensive way (load a 7-8B model on Modal, then get a
+  `None`-attention crash).
+- **Sentence score = mean of its tokens' attention, not sum** -- matches
+  how llmlingua's own sentence-level perplexity scoring works
+  (`granularity="sentence"` is a `loss.mean()`), and avoids just rewarding
+  longer sentences for having more tokens. Unit-tested directly
+  (`test_uses_mean_not_sum_so_longer_sentences_arent_favored`).
+- **Selection overshoots rather than undershoots** the token budget (adds
+  the sentence that crosses the line, then stops) -- same convention
+  llmlingua's own `control_sentence_budget` uses for its bm25/sentbert
+  rows.
+- **Reconstruction preserves original document/sentence order**, never
+  rank order -- consistent with this project's no-reordering rule
+  everywhere else.
+- **Cacheability**: context-then-query layout means the context's KV
+  cache is, in principle, reusable across different queries against the
+  same context (one cacheable pass, vs. LongLLMLingua's two uncacheable
+  ones). This benchmark's NQ examples each have a unique context, so nothing
+  in this harness's data actually exercises that reuse -- it's a
+  structural property of the method, documented honestly as such rather
+  than claimed as something this specific experiment demonstrates.
+
+**Architecture**: split model-dependent (`compute_token_attention` -- the
+real forward pass, needs a GPU) from model-independent
+(`sentences_with_scores`, `select_sentences` -- pure Python) code. Not
+just tidiness: this dev machine's local `torch` install is broken (missing
+`torch.nn`, pre-existing, unrelated to this project) and can't run a real
+forward pass locally regardless, so this split is what made local testing
+possible at all. 7 unit tests in `test_attention_scorer.py`, synthetic
+inputs (a trivial word-level fake tokenizer, hand-computed expected
+scores), no GPU needed -- all passing (`python test_attention_scorer.py`).
+
+**Also fixed a latent bug in already-merged code**, found while checking
+whether `nltk.sent_tokenize` would work in the Modal image for this:
+`modal_app.py` only downloaded the `punkt` nltk resource, but `nltk>=3.9`
+renamed it to `punkt_tab` (a security fix -- the old resource used
+`pickle`, which allows arbitrary code execution). Reproduced locally
+first (`LookupError: Resource punkt_tab not found`) before touching
+Modal. Neither the bm25/sentbert baselines nor anything else in this
+project has ever actually called `nltk.sent_tokenize` in a successful
+run so far (the smoke test and fidelity check only exercise
+`longllmlingua`/`full_context`/`zero_shot`), so this was sitting
+undiscovered in merged code -- would have broken the first bm25/sentbert
+row and this scorer the moment either actually ran. Now downloads both
+`punkt` and `punkt_tab`, covering nltk versions on either side of the
+rename.
+
+Not yet done: the layer sweep (which layer, per scorer model, to read
+attention from) and wiring the scorer into `compress_job.py`'s row
+dispatch -- both need `attention_scorer.py` to exist first, which it now
+does.
