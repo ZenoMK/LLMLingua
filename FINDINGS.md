@@ -428,15 +428,41 @@ the shallower layer (documented behavior, not an accident).
 Dry-run verified (no `--i-have-approval`): `modal_layer_sweep.py` builds
 and registers cleanly. **Not yet run for real.**
 
-Rough cost estimate for the actual run (2 models x [compress ~5 examples
-x 1 forward pass each (layers batched) + evaluate ~5 examples x 4 layers
-= 20 reader generations]): each model's compress+evaluate pair is on the
-order of a few minutes of A10G time (small model load dominates the
-compress phase; reader generations dominate the evaluate phase) --
-**roughly $0.30-0.70 total for both models**. Needs its own go-ahead
-before running, same as every other Modal cost in this project.
-
 Also added `config.LAYER_SWEEP_N_EXAMPLES` / `LAYER_SWEEP_BUDGET` (5
-examples, the "2x" budget, matching `FIDELITY_CHECK_BUDGET`'s reasoning)
-and an empty `config.ATTENTION_SCORER_LAYERS` placeholder, to be filled in
-by hand once the sweep actually runs.
+examples at the time, the "2x" budget, matching `FIDELITY_CHECK_BUDGET`'s
+reasoning) and an empty `config.ATTENTION_SCORER_LAYERS` placeholder, to
+be filled in by hand once the sweep actually runs.
+
+**Revised before running anything**: raised `LAYER_SWEEP_N_EXAMPLES` from
+the brief's suggested "~5" to **100**. Picking a permanent layer is a
+discrete choice among 4 candidates, decided once and then locked in for
+the rest of the project -- unlike the fidelity check's n=10 (which was
+just validating the harness works, resolved cleanly at n=100 with no
+consequence either way), there's no later step that rechecks the layer
+choice at scale. n=5 risks locking in whichever layer got lucky on those
+5 questions. Agreed plan: smoke-test the pipeline at n=5 first (`--limit
+5`, cheap, same role the earlier `--limit 10` fidelity-check run played),
+confirm it works end to end, then run the real 100-example decision.
+
+**Also applied the same subset-sampling fix here that `compress_job.py`
+got earlier**: the layer sweep's real run now loads the FULL 2,655-example
+file and takes a seeded random 100-example subset
+(`data.layer_sweep_subset`, its own seed, independent of
+`fidelity_check_subset`/`method_sweep_subset`) rather than just the first
+100 in file order -- "first N" is still what `--limit` gives for the
+cheap smoke test, where determinism matters more than representativeness,
+but the real decision-making run needed the same fix. Verified locally
+(no GPU needed, `data.py` doesn't need `torch`): 100-example subset spans
+idx 10-2,625 across the file, deterministic given the seed, and its
+overlap with the other two subsets (6% with fidelity_check's, 15% with
+method_sweep's) matches what independent random draws from the same pool
+should produce.
+
+**Updated cost estimate for the real (n=100) run**: reader generations
+now dominate even more than before -- 400 per model (100 examples x 4
+layers) x 2 models = 800 total, exceeding the fidelity check's own 300.
+Compression is comparatively cheap (~100 short forward passes per model,
+no generation). Rough total: **~$1.50-3, roughly 2 hours of wall-clock
+A10G time, unbatched** -- comfortably under the $50 cap, but long enough
+to need running in the background rather than watched live. The n=5
+smoke test first is unchanged in cost (~$0.30-0.70, a few minutes).

@@ -76,11 +76,15 @@ require accepting Meta's license on Hugging Face for your account before
    **Done** (2026-08-23): `full_context=0.650 >= longllmlingua@2x=0.620 >
    zero_shot=0.570` -- ordering holds, harness validated.
 4. **`modal_layer_sweep.py`** -- per-model best attention layer for
-   `attention_scorer.py`: ~4 late-layer candidates on a fixed 5-example
-   set, per scorer size independently, picking whichever layer gives the
-   highest mean `best_subspan_em`. Built and dry-run verified. **Not yet
-   run** -- estimated ~$0.30-0.70 for both models; needed before the
-   attention rows can be wired into `compress_job.py`'s row dispatch.
+   `attention_scorer.py`: ~4 late-layer candidates, per scorer size
+   independently, picking whichever layer gives the highest mean
+   `best_subspan_em`. Real run is a seeded random 100-example subset
+   (`--limit N` overrides with a deterministic first-N for a cheap
+   pipeline smoke test first -- do that before the real run, same as
+   every other Modal cost in this project). Built and dry-run verified.
+   **Not yet run** -- smoke test (`--limit 5`) ~$0.30-0.70; real run
+   ~$1.50-3, ~2hr wall-clock unbatched. Needed before the attention rows
+   can be wired into `compress_job.py`'s row dispatch.
 5. **`compress_job.py --protocol method_sweep --execute` then
    `read_job.py --execute`** -- all rows (attention 1.5B/7B, LongLLMLingua,
    bm25, sentbert) x both budgets on the fixed ~400-example subset.

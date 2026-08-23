@@ -78,11 +78,24 @@ def _build_full_prompt(instruction: str, compressed_body: str, question: str) ->
     return "\n\n".join([instruction, compressed_body, question])
 
 
-def compress_candidates(model_size: str) -> List[dict]:
+def load_layer_sweep_examples(limit=None) -> List["data.NQExample"]:
+    """Same shape as compress_job.py's load_examples(): with `limit`,
+    deterministic first-N (for a cheap smoke test of the pipeline);
+    without it, loads the FULL file and takes the seeded random subset
+    (config.LAYER_SWEEP_N_EXAMPLES via data.layer_sweep_subset) -- "first
+    N in file order" isn't a substitute for a real random sample once
+    this is the run that actually decides the layer, not just a pipeline
+    check."""
+    if limit is not None:
+        return data.load_position10(limit=limit)
+    return data.layer_sweep_subset(data.load_position10())
+
+
+def compress_candidates(model_size: str, limit=None) -> List[dict]:
     """Loads config.ATTENTION_SCORER_MODELS[model_size], compresses the
-    fixed layer-sweep example set at every candidate layer for that
-    model's depth. Returns records ready for evaluate_candidates. Never
-    loads the reader."""
+    layer-sweep example set (see load_layer_sweep_examples) at every
+    candidate layer for that model's depth. Returns records ready for
+    evaluate_candidates. Never loads the reader."""
     import gc
 
     import torch
@@ -102,7 +115,7 @@ def compress_candidates(model_size: str) -> List[dict]:
     model.eval()
     try:
         layers = candidate_layers(model.config.num_hidden_layers)
-        examples = data.load_position10(limit=config.LAYER_SWEEP_N_EXAMPLES)
+        examples = load_layer_sweep_examples(limit=limit)
         target_token = config.TOKEN_BUDGETS[config.LAYER_SWEEP_BUDGET]
         print(
             f"model_size={model_size} model={model_name} "
@@ -189,16 +202,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-size", choices=list(config.ATTENTION_SCORER_MODELS), required=True)
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="override example count with a deterministic first-N (for a cheap pipeline smoke "
+        "test); omit for the real run, config.LAYER_SWEEP_N_EXAMPLES from a seeded random subset",
+    )
+    parser.add_argument(
         "--execute", action="store_true", help="actually load models and run -- needs --i-have-approval too"
     )
     parser.add_argument("--i-have-approval", action="store_true")
     args = parser.parse_args()
 
     model_name = config.ATTENTION_SCORER_MODELS[args.model_size]
-    print(
-        f"model_size={args.model_size} model={model_name} "
-        f"n_examples={config.LAYER_SWEEP_N_EXAMPLES} budget={config.LAYER_SWEEP_BUDGET}"
-    )
+    n = args.limit if args.limit is not None else config.LAYER_SWEEP_N_EXAMPLES
+    print(f"model_size={args.model_size} model={model_name} n_examples={n} budget={config.LAYER_SWEEP_BUDGET}")
 
     if not args.execute:
         print("--execute not passed: dry run only, nothing was loaded or called.")
@@ -210,7 +228,7 @@ def main():
             "per the project's working agreement."
         )
 
-    records = compress_candidates(args.model_size)
+    records = compress_candidates(args.model_size, limit=args.limit)
     result = evaluate_candidates(records)
     print(json.dumps(result["summary"], indent=2))
 
