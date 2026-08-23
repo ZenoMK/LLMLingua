@@ -19,10 +19,12 @@ Reproduction harness validated end to end: `check_model_access.py`,
 `smoke_test.py`, and the full internal-consistency fidelity check have all
 run successfully on Modal (see `FINDINGS.md`'s 2026-08-16 and 2026-08-23
 entries for results). Step 3's attention scorer (`attention_scorer.py`) is
-implemented and unit-tested, but not yet wired into `compress_job.py`'s
-row dispatch -- the per-model layer sweep needs to run first (`layer_sweep.py`,
-not written yet) so there's an actual layer to wire in. Per this project's
-working agreement, every run still needs its own specific go-ahead --
+implemented and unit-tested, and the per-model layer sweep
+(`layer_sweep.py` / `modal_layer_sweep.py`) is built and dry-run verified
+but **not yet run for real** -- `config.ATTENTION_SCORER_LAYERS` is still
+empty, and the scorer isn't wired into `compress_job.py`'s row dispatch
+until it isn't. Per this project's working agreement, every run still
+needs its own specific go-ahead --
 scripts that load a model or run generation refuse to run without an
 explicit `--i-have-approval` flag as a reminder of that.
 
@@ -73,10 +75,12 @@ require accepting Meta's license on Hugging Face for your account before
    now that we're on a different reader -- see `config.FIDELITY_CHECK`.
    **Done** (2026-08-23): `full_context=0.650 >= longllmlingua@2x=0.620 >
    zero_shot=0.570` -- ordering holds, harness validated.
-4. **Layer sweep** (`layer_sweep.py`, not written yet) -- per-model best
-   attention layer for `attention_scorer.py`, on a handful of examples for
-   each of the two scorer sizes separately. Needed before the attention
-   rows can be wired into `compress_job.py`'s row dispatch.
+4. **`modal_layer_sweep.py`** -- per-model best attention layer for
+   `attention_scorer.py`: ~4 late-layer candidates on a fixed 5-example
+   set, per scorer size independently, picking whichever layer gives the
+   highest mean `best_subspan_em`. Built and dry-run verified. **Not yet
+   run** -- estimated ~$0.30-0.70 for both models; needed before the
+   attention rows can be wired into `compress_job.py`'s row dispatch.
 5. **`compress_job.py --protocol method_sweep --execute` then
    `read_job.py --execute`** -- all rows (attention 1.5B/7B, LongLLMLingua,
    bm25, sentbert) x both budgets on the fixed ~400-example subset.
@@ -93,8 +97,9 @@ require accepting Meta's license on Hugging Face for your account before
 | `budgets.py` | Token counting in the reader's own HF tokenizer, achieved-vs-target ratio reporting. |
 | `reader.py` | Local HF reader wrapper (load, generate, unload) -- `meta-llama/Llama-3.1-8B-Instruct`, greedy decoding. |
 | `compress.py` | One wrapper per comparison row (`longllmlingua`, `bm25`, `sentbert`; `attention` stubbed for Step 3), plus the `full_context`/`zero_shot` pseudo-conditions used by the fidelity check. |
-| `attention_scorer.py` | Step 3's method: query-to-context attention scoring. Model-independent sentence aggregation/selection (unit-tested); the forward pass itself needs a real model, exercised by `layer_sweep.py` (not written yet). |
+| `attention_scorer.py` | Step 3's method: query-to-context attention scoring. Model-independent sentence aggregation/selection (unit-tested); the forward pass itself needs a real model, exercised by `layer_sweep.py`. |
 | `test_attention_scorer.py` | Unit tests for `attention_scorer.py`'s model-independent functions -- synthetic inputs, no GPU needed. `python test_attention_scorer.py`. |
+| `layer_sweep.py` / `modal_layer_sweep.py` | Per-model layer sweep (order-of-operations step 4) and its Modal entrypoint. `candidate_layers`/`pick_best_layer` are pure Python and unit-tested (`test_layer_sweep.py`); the actual sweep needs a real model. |
 | `compress_job.py` | Compression half of the two-job pipeline. Dry-run cost/scope summary always prints; `--execute` needs `--i-have-approval`. |
 | `read_job.py` | Reading half of the two-job pipeline. Same dry-run/approval gating. `summarize_by_row()` gives per-row mean `best_subspan_em`. |
 | `check_model_access.py` | Standalone approval-gated script for order-of-operations step 1. |

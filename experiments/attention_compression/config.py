@@ -52,6 +52,19 @@ ATTENTION_SCORER_MODELS = {
     "7b": "meta-llama/Llama-2-7b-chat-hf",
 }
 
+# Per-model layer sweep settings (see layer_sweep.py). ~50/66/75/100%
+# depth candidates on a small fixed example set, per model independently
+# -- the best layer is model-specific, so no layer gets reused across the
+# two sizes. Budget matches FIDELITY_CHECK's choice of "2x" (the milder of
+# the two budgets, a reasonable default when the point is comparing
+# layers to each other, not stress-testing a tight budget).
+LAYER_SWEEP_N_EXAMPLES = 5
+LAYER_SWEEP_BUDGET = "2x"
+
+# Filled in by hand from layer_sweep.py's output once it's actually run --
+# empty until then. See FINDINGS.md for the run that populates this.
+ATTENTION_SCORER_LAYERS = {}
+
 
 # ---------------------------------------------------------------------------
 # Compression pipeline settings, per method row

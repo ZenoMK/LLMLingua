@@ -384,3 +384,59 @@ Not yet done: the layer sweep (which layer, per scorer model, to read
 attention from) and wiring the scorer into `compress_job.py`'s row
 dispatch -- both need `attention_scorer.py` to exist first, which it now
 does.
+
+### 2026-08-23 -- Step 3, part 2: the layer sweep (no runs)
+
+`layer_sweep.py` + `modal_layer_sweep.py`. For each scorer model
+independently, tries ~4 late-layer candidates (~50/66/75/100% depth,
+computed from the model's own `num_hidden_layers` rather than hardcoded)
+on a fixed 5-example set, and picks whichever layer gives the highest
+mean `best_subspan_em` once its compressed output is fed to the reader --
+"best" means "leads to correct answers," the same criterion the rest of
+this project uses, not an indirect proxy like attention entropy.
+
+**Revised `compute_token_attention`'s signature** (merged in the previous
+PR, but not called from anywhere else yet, so this was the moment to fix
+it): it took a single `layer` and did one forward pass per call. But
+`output_attentions=True` already returns *every* layer's attention
+weights in one pass -- sweeping 4 candidates the old way would have been
+4 fully-redundant forward passes per example for identical underlying
+compute. Now takes `layers: List[int]` and returns `{layer: token_scores}`
+from a single pass.
+
+**Two phases, same one-model-at-a-time discipline as `compress_job.py`/
+`read_job.py`**: `compress_candidates()` loads only the scorer, produces
+every (layer, example) candidate's compressed prompt; `evaluate_candidates()`
+loads only the reader, scores every candidate, and computes the per-model
+argmax layer (`pick_best_layer()`) before returning -- computed wherever
+the records already are (inside the Modal container) rather than shipped
+back to this dev machine to compute locally, since this machine's broken
+local `torch` can't import `compress.py`/`budgets.py` anyway (see below).
+
+**Kept `candidate_layers()` and `pick_best_layer()` locally testable**,
+same reasoning as the scorer itself: moved `layer_sweep.py`'s `budgets`/
+`compress` imports (both transitively need `transformers`/`llmlingua`,
+broken locally) from module level into `compress_candidates()`'s function
+body, so importing the file itself doesn't require a working `torch`.
+7 more unit tests (`test_layer_sweep.py`), all passing -- including
+verifying `candidate_layers(28)` lands on the expected indices, 100%
+depth is always the last valid layer (never out of range), small models
+that collapse two fractions onto the same index get deduped, and
+`pick_best_layer` keeps model sizes independent and breaks ties toward
+the shallower layer (documented behavior, not an accident).
+
+Dry-run verified (no `--i-have-approval`): `modal_layer_sweep.py` builds
+and registers cleanly. **Not yet run for real.**
+
+Rough cost estimate for the actual run (2 models x [compress ~5 examples
+x 1 forward pass each (layers batched) + evaluate ~5 examples x 4 layers
+= 20 reader generations]): each model's compress+evaluate pair is on the
+order of a few minutes of A10G time (small model load dominates the
+compress phase; reader generations dominate the evaluate phase) --
+**roughly $0.30-0.70 total for both models**. Needs its own go-ahead
+before running, same as every other Modal cost in this project.
+
+Also added `config.LAYER_SWEEP_N_EXAMPLES` / `LAYER_SWEEP_BUDGET` (5
+examples, the "2x" budget, matching `FIDELITY_CHECK_BUDGET`'s reasoning)
+and an empty `config.ATTENTION_SCORER_LAYERS` placeholder, to be filled in
+by hand once the sweep actually runs.

@@ -20,8 +20,8 @@
 # pass locally regardless.
 #
 # Which layer to read attention from, per scorer model, is a separate
-# question -- see layer_sweep.py (not written yet). This module takes
-# `layer` as a plain argument; it doesn't know or care how it was chosen.
+# question -- see layer_sweep.py. This module takes layers as a plain
+# argument; it doesn't know or care how they were chosen.
 #
 # Cacheability: because context comes first and query second, the
 # context's KV cache is, in principle, reusable across different queries
@@ -149,7 +149,7 @@ def select_sentences(
     return "\n".join(" ".join(kept_by_doc[doc_idx]) for doc_idx in sorted(kept_by_doc))
 
 
-def compute_token_attention(model, tokenizer, context: List[str], question: str, layer: int):
+def compute_token_attention(model, tokenizer, context: List[str], question: str, layers: List[int]):
     """Model-dependent: the actual forward pass. Requires a real model
     loaded with attn_implementation="eager" -- optimized attention paths
     (sdpa, flash_attention_2) don't return attention weights at all, and
@@ -166,11 +166,20 @@ def compute_token_attention(model, tokenizer, context: List[str], question: str,
     content, not a template-mediated one, and we don't need it to
     generate anything.
 
+    Takes a LIST of layers, not one, and does a single forward pass for
+    all of them: output_attentions=True already returns every layer's
+    attention weights in one pass, so there's no reason to re-run the
+    model once per candidate layer. This matters concretely for
+    layer_sweep.py, which evaluates several candidate layers per example
+    -- re-running the forward pass per layer would be purely-wasted
+    N-times-redundant GPU cost for identical work. Single-layer callers
+    just pass a one-element list and index the result with [layer].
+
     Returns (context, per-document offset mappings, per-document token
-    base indices, token_scores) -- everything sentences_with_scores()
-    needs, so callers typically do:
-        _, offsets, bases, scores = compute_token_attention(...)
-        sentences = sentences_with_scores(context, offsets, bases, scores)
+    base indices, {layer: token_scores}) -- everything
+    sentences_with_scores() needs, so callers typically do:
+        _, offsets, bases, scores_by_layer = compute_token_attention(..., layers=[7])
+        sentences = sentences_with_scores(context, offsets, bases, scores_by_layer[7])
     """
     import torch
 
@@ -191,14 +200,16 @@ def compute_token_attention(model, tokenizer, context: List[str], question: str,
     with torch.no_grad():
         out = model(input_ids, output_attentions=True)
 
-    layer_attn = out.attentions[layer]
-    if layer_attn is None:
-        raise RuntimeError(
-            "model.attentions is None -- the model wasn't loaded with "
-            'attn_implementation="eager" (sdpa/flash_attention_2 don\'t '
-            "return attention weights)."
-        )
-    query_to_context = layer_attn[0, :, n_context:, :n_context]  # [heads, n_query, n_context]
-    token_scores = query_to_context.mean(dim=(0, 1)).float().cpu().tolist()  # mean over heads AND query positions
+    token_scores_by_layer = {}
+    for layer in layers:
+        layer_attn = out.attentions[layer]
+        if layer_attn is None:
+            raise RuntimeError(
+                "model.attentions is None -- the model wasn't loaded with "
+                'attn_implementation="eager" (sdpa/flash_attention_2 don\'t '
+                "return attention weights)."
+            )
+        query_to_context = layer_attn[0, :, n_context:, :n_context]  # [heads, n_query, n_context]
+        token_scores_by_layer[layer] = query_to_context.mean(dim=(0, 1)).float().cpu().tolist()  # mean over heads AND query positions
 
-    return context, offset_mappings, doc_token_base, token_scores
+    return context, offset_mappings, doc_token_base, token_scores_by_layer
