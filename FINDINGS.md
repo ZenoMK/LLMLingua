@@ -16,8 +16,16 @@ Every entry should be config-labeled: model, chosen layer (once relevant),
 budget, reader, benchmark/slice -- so a number is traceable without having
 to guess what settings produced it.
 
-**Cumulative spend so far: $0.00** (Modal GPU-hours only -- no paid API
-anywhere in the pipeline; updated after every approved run)
+**Cumulative spend so far: ~$2-3** (Modal GPU-hours only, no paid API
+anywhere in the pipeline; updated after every approved run). Precise for
+the full fidelity-check run -- `modal app list` gives real start/stop
+timestamps (2026-08-23 15:52:21 -> 16:24:42 = 32.35 min A10G =~ $0.59),
+cheaper than the ~$0.90-1.50 estimate. Reasoned/rough for the rest
+(2026-08-16 smoke-test debugging session + the 2026-08-23 `--limit 10`
+validation run) -- Modal's ephemeral `modal run` apps don't keep long
+listing history, so exact timestamps for those aren't recoverable after
+the fact; still comfortably under the $50 project cap by a wide margin
+either way.
 
 ## Log
 
@@ -266,3 +274,42 @@ Dry-run verified (no `--i-have-approval`): both `modal_smoke_test.py` and
 run for real** -- given the smoke test needed 6 attempts before a dry run
 that looked clean actually worked, a small `--limit 10` validation run is
 worth doing before committing to the full ~100-example / ~$1-1.50 run.
+
+**`--limit 10` validation run**: succeeded end to end (all 30 records
+compressed and read/scored through the real two-job split with volume
+handoff -- no new bugs). Ordering check technically flagged
+`VIOLATED`: `full_context=0.800 >= longllmlingua@2x=0.600 >
+zero_shot=0.600` -- zero_shot tied the compressed row instead of trailing
+it. Pulled the raw per-example results before treating that as a problem
+(`modal volume get attention-compression-artifacts
+fidelity_check/results.jsonl`): `full_context` and `longllmlingua` agreed
+on 8/10 examples, including agreeing on both examples they got *wrong*
+even with the full uncompressed context (those are just hard questions,
+not a compression failure). The two disagreements canceled out --
+compression happened to drop the key sentence for one example
+(Cyrus/human-rights, where zero-shot guessed right anyway) and preserved
+it for another (eye evolution, where zero-shot didn't know it). All
+answers read as coherent prose referencing the actual documents, nothing
+garbled. Read this as n=10 noise, not a wiring bug, and proceeded to the
+full run rather than iterating on a sample too small to trust.
+
+**Full 100-example run: ordering holds.**
+`full_context=0.650 >= longllmlingua@2x=0.620 > zero_shot=0.570` --
+**OK**. The compression cost is small (0.65 -> 0.62, 3 points) and it
+clearly beats parametric-knowledge-only (0.57), confirming both that the
+compressed prompts retain the information needed to answer and that this
+reader has real headroom above guessing from pretraining alone -- i.e.
+retrieval content is doing real work here, and the harness measures that
+correctly.
+
+Compression stats for the `longllmlingua@2x` row (pulled from the full
+results, not just the printed summary): averaged 2,945 -> 2,556 tokens
+(achieved ratio 1.153x against a 2x/3,000-token target), range 2,310-2,753
+tokens, **0/100 examples exceeded the token budget**.
+
+**This validates the harness end to end.** `full_context`, `longllmlingua`,
+and `zero_shot` all wire up correctly through both Modal jobs; the reader
+answers coherently; scoring and budget accounting are both doing what
+they claim. Next real milestone is Step 3 -- the attention scorer itself
+-- since the reproduction/baseline machinery this was built to validate
+now has a passing sanity check behind it.
