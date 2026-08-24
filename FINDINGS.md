@@ -16,15 +16,17 @@ Every entry should be config-labeled: model, chosen layer (once relevant),
 budget, reader, benchmark/slice -- so a number is traceable without having
 to guess what settings produced it.
 
-**Cumulative spend so far: ~$3.50-5** (Modal GPU-hours only, no paid API
+**Cumulative spend so far: ~$4-5.50** (Modal GPU-hours only, no paid API
 anywhere in the pipeline; updated after every approved run). Precise
 where `modal app list`'s start/stop timestamps are still available: the
-fidelity check (32.35 min =~ $0.59) and the real n=100 layer sweep
-(58.23 min =~ $1.07). Reasoned/rough for the rest (2026-08-16 smoke-test
-debugging session, the two `--limit 5`/`--limit 10` validation runs) --
-Modal's ephemeral `modal run` apps don't keep long listing history, so
-exact timestamps for those aren't recoverable after the fact; still
-comfortably under the $50 project cap by a wide margin either way.
+original fidelity check (32.35 min =~ $0.59), the real n=100 layer sweep
+(58.23 min =~ $1.07), and the fidelity check re-run under the corrected
+2x budget (26.13 min =~ $0.48). Reasoned/rough for the rest (2026-08-16
+smoke-test debugging session, the two `--limit 5`/`--limit 10`
+validation runs) -- Modal's ephemeral `modal run` apps don't keep long
+listing history, so exact timestamps for those aren't recoverable after
+the fact; still comfortably under the $50 project cap by a wide margin
+either way.
 
 ## Log
 
@@ -634,3 +636,50 @@ tests) re-run clean, no regressions -- neither suite touches
 built and PR'd the fix only -- **no re-run yet**; re-running the fidelity
 check (and likely the layer sweep) under the corrected, genuinely-2x
 budget needs its own specific go-ahead with a cost estimate.
+
+### 2026-08-24 -- fidelity check re-run: real 2x compression costs nothing, not 3 points
+
+PR #14 (the budget fix above) merged, then re-ran
+`modal_fidelity_check.py --i-have-approval` for real -- same fixed
+100-example subset, same reader, same rows, now under
+`COMPRESSION_RATES["2x"]=0.5` instead of the old fixed
+`target_token=3000`. **Cost: 26.13 min A10G =~ $0.48** -- cheaper than
+both the ~$0.60-1.00 estimate and the original (buggy-budget) run,
+despite the compressor now doing genuinely more work per example.
+
+**Achieved compression is real this time**: original prompts averaged
+2,944.8 tokens (matches every prior measurement); target averaged 1,472.4
+(range 1,284-1,634, the per-example `compute_target_token` output);
+actual compressed output averaged **1,272.3 tokens** (range 1,099-1,487)
+-- an **achieved ratio of 2.317x**, not just meeting the 2x target but
+overshooting it, and landing closer to the paper's own reported 2.06x
+(2,946 -> 1,429, Table 1) than to a bare "exactly 2x" reading. 0/100
+examples exceeded their target_token.
+
+**Result: `full_context=0.650 >= longllmlingua@2x=0.650 > zero_shot=0.570`
+-- OK, and this time compressed *ties* full-context exactly**, instead of
+trailing it by 3 points the way the old, much milder ~1.15x squeeze did
+(`full_context=0.650 >= longllmlingua@2x=0.620 > zero_shot=0.570`,
+2026-08-23 entry). Same 100 examples, same reader, same everything except
+the budget -- more aggressive compression (2.3x vs. 1.15x) produced an
+equal-or-better result, not a worse one.
+
+This directly answers the question that prompted checking the paper in
+the first place ("this might also explain the performance"): **yes, the
+wrong budget was suppressing LongLLMLingua's apparent score** -- at
+1.15x it wasn't compressing enough to show its actual behavior, closer
+to a no-op than a real test. It's also consistent with a specific claim
+the paper itself makes (Sec. 5, point 4): "with the increase of the
+compression ratio... LongLLMLingua even achieves a little performance
+gain," attributed to the coarse-to-fine, question-aware ranking getting
+*more* selective about what survives as the budget tightens, not just
+cutting more indiscriminately.
+
+Read this cautiously, though: n=100 with a binary per-example metric has
+real noise -- a handful of flipped examples moves the mean by a few
+points either way, same caveat as every other 100-example result in this
+project. One tied run at one budget is a real, honest data point, not
+proof the two conditions are truly equivalent at scale. Config for this
+result: reader=Llama-3.1-8B-Instruct, compressor=LLaMA-2-7B-Chat, budget
+2x (genuine per-example ratio), gold at position 10, reorder off, seed
+20260816, n=100.
