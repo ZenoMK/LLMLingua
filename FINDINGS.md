@@ -16,16 +16,15 @@ Every entry should be config-labeled: model, chosen layer (once relevant),
 budget, reader, benchmark/slice -- so a number is traceable without having
 to guess what settings produced it.
 
-**Cumulative spend so far: ~$2-3** (Modal GPU-hours only, no paid API
-anywhere in the pipeline; updated after every approved run). Precise for
-the full fidelity-check run -- `modal app list` gives real start/stop
-timestamps (2026-08-23 15:52:21 -> 16:24:42 = 32.35 min A10G =~ $0.59),
-cheaper than the ~$0.90-1.50 estimate. Reasoned/rough for the rest
-(2026-08-16 smoke-test debugging session + the 2026-08-23 `--limit 10`
-validation run) -- Modal's ephemeral `modal run` apps don't keep long
-listing history, so exact timestamps for those aren't recoverable after
-the fact; still comfortably under the $50 project cap by a wide margin
-either way.
+**Cumulative spend so far: ~$3.50-5** (Modal GPU-hours only, no paid API
+anywhere in the pipeline; updated after every approved run). Precise
+where `modal app list`'s start/stop timestamps are still available: the
+fidelity check (32.35 min =~ $0.59) and the real n=100 layer sweep
+(58.23 min =~ $1.07). Reasoned/rough for the rest (2026-08-16 smoke-test
+debugging session, the two `--limit 5`/`--limit 10` validation runs) --
+Modal's ephemeral `modal run` apps don't keep long listing history, so
+exact timestamps for those aren't recoverable after the fact; still
+comfortably under the $50 project cap by a wide margin either way.
 
 ## Log
 
