@@ -21,7 +21,7 @@ from llmlingua import PromptCompressor
 import compress
 import config
 import data
-from budgets import budget_report, count_reader_tokens
+from budgets import budget_report, compute_target_token, count_reader_tokens
 
 # Which backbone PromptCompressor needs loaded for each row. bm25/sentbert
 # never actually use the loaded causal LM for scoring (get_rank_results'
@@ -47,7 +47,7 @@ def resolve_protocol(protocol: str):
 def resolve_rows_and_budgets(protocol: str, rows: Optional[List[str]], budgets_list: Optional[List[str]]):
     _, is_fidelity = resolve_protocol(protocol)
     rows = rows or (config.FIDELITY_CHECK_ROWS if is_fidelity else config.BASELINE_ROWS)
-    budgets_list = budgets_list or ([config.FIDELITY_CHECK_BUDGET] if is_fidelity else list(config.TOKEN_BUDGETS))
+    budgets_list = budgets_list or ([config.FIDELITY_CHECK_BUDGET] if is_fidelity else list(config.COMPRESSION_RATES))
     return rows, budgets_list
 
 
@@ -94,7 +94,7 @@ def run_compression(
             budget_names = [None] if row in ("full_context", "zero_shot") else budgets_list
             for ex in examples:
                 for budget_name in budget_names:
-                    target_token = config.TOKEN_BUDGETS[budget_name] if budget_name else None
+                    target_token = compute_target_token(budget_name, origin_tokens_by_idx[ex.idx])
                     prompt = _compressed_prompt_for_row(compressor, row, ex, target_token)
                     report = budget_report(budget_name, origin_tokens_by_idx[ex.idx], count_reader_tokens(prompt))
                     records.append(

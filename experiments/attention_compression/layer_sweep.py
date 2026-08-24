@@ -101,7 +101,7 @@ def compress_candidates(model_size: str, limit=None) -> List[dict]:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from budgets import budget_report, count_reader_tokens
+    from budgets import budget_report, compute_target_token, count_reader_tokens
     from compress import compress_full_context
 
     model_name = config.ATTENTION_SCORER_MODELS[model_size]
@@ -116,16 +116,17 @@ def compress_candidates(model_size: str, limit=None) -> List[dict]:
     try:
         layers = candidate_layers(model.config.num_hidden_layers)
         examples = load_layer_sweep_examples(limit=limit)
-        target_token = config.TOKEN_BUDGETS[config.LAYER_SWEEP_BUDGET]
         print(
             f"model_size={model_size} model={model_name} "
             f"num_hidden_layers={model.config.num_hidden_layers} candidate_layers={layers} "
-            f"n_examples={len(examples)} budget={config.LAYER_SWEEP_BUDGET} ({target_token} tokens)"
+            f"n_examples={len(examples)} budget={config.LAYER_SWEEP_BUDGET} "
+            f"(rate={config.COMPRESSION_RATES[config.LAYER_SWEEP_BUDGET]}, per-example target_token)"
         )
 
         records = []
         for ex in examples:
             origin_tokens = count_reader_tokens(compress_full_context(ex.context, ex.instruction, ex.question))
+            target_token = compute_target_token(config.LAYER_SWEEP_BUDGET, origin_tokens)
             _, offsets, bases, scores_by_layer = attention_scorer.compute_token_attention(
                 model, tokenizer, ex.context, ex.question, layers
             )
