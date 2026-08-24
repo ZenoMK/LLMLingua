@@ -683,3 +683,13 @@ proof the two conditions are truly equivalent at scale. Config for this
 result: reader=Llama-3.1-8B-Instruct, compressor=LLaMA-2-7B-Chat, budget
 2x (genuine per-example ratio), gold at position 10, reorder off, seed
 20260816, n=100.
+
+**The exact tie is a cancellation, not identical behavior** -- checked
+directly against the raw per-example results: 0/100 examples got an
+identical prompt between the two conditions (compression really did
+touch every example), and only 3/100 got identical reader output.
+Per-example: 56 both right, 26 both wrong, **9 where full_context alone
+got it right, 9 where longllmlingua@2x alone got it right** -- 65
+correct either way, but different examples in each case. Compression is
+genuinely helping on some and hurting on others, not behaving
+identically; they happen to net to the same score at this sample size.
