@@ -135,14 +135,30 @@ BASELINE_ROWS = ["bm25", "sentbert", "longllmlingua"]
 
 
 # ---------------------------------------------------------------------------
-# Token budgets -- measured in the READER's tokenizer (its own HF
-# tokenizer now, not tiktoken -- see budgets.py). Absolute target_token
-# values, matching the paper's NQ table's 2x and 4x compression conditions.
+# Compression rates -- measured in the READER's tokenizer (its own HF
+# tokenizer now, not tiktoken -- see budgets.py). target_token is computed
+# fresh per example as round(reader_tokens(original) * rate), NOT a fixed
+# absolute number -- see budgets.compute_target_token().
+#
+# These rates match the paper's actual NaturalQuestions table (Table 1),
+# verified directly against arxiv 2310.06839: Original Prompt = 2,946
+# tokens; under the "2x constraint" LongLLMLingua achieves ~1,429 tokens
+# (~0.49x, i.e. genuinely ~half); under the "4x constraint" it achieves
+# ~748 tokens (~0.25x, i.e. genuinely ~quarter). Our own measured average
+# original length (~2,945 tokens) matches the paper's almost exactly,
+# confirming the rest of the dataset/tokenizer setup.
+#
+# {"2x": 3000, "4x": 2000} previously lived here -- those are Table 2's
+# (LongBench) absolute token constraints, not Table 1's (NaturalQuestions)
+# ratios. LongBench mixes wildly different task lengths so the paper uses
+# an absolute number there instead of a ratio; NQ's prompts are all ~20
+# documents so a ratio is the right and paper-faithful unit. See
+# FINDINGS.md for the full misattribution writeup.
 # ---------------------------------------------------------------------------
 
-TOKEN_BUDGETS = {
-    "2x": 3000,
-    "4x": 2000,
+COMPRESSION_RATES = {
+    "2x": 0.5,
+    "4x": 0.25,
 }
 
 

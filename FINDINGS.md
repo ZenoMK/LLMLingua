@@ -572,3 +572,66 @@ specifically: if that result looks surprising, having the raw per-example
 records to inspect (now written locally to `layer_sweep_output/`, one
 file per model) is the difference between digging in for free versus
 spending again just to reproduce what already ran.
+
+### 2026-08-24 -- "2x"/"4x" budgets were the wrong table's numbers (fixed, no re-run yet)
+
+While reviewing the "2x"/"4x" budget setup, went back to the actual paper
+(arxiv 2310.06839) instead of trusting the project brief's paraphrase of
+it. The brief said the budgets should match "their NQ table's 2x and 4x
+compression conditions," which had been read as `{"2x": 3000, "4x":
+2000}` -- but those numbers turn out to belong to a **different table**.
+
+The paper has two separate compression-target tables:
+- **Table 1 (NaturalQuestions, 20 documents)** -- our actual benchmark.
+  `Original Prompt` = **2,946 tokens**. Under the "2x constraint" section,
+  LongLLMLingua achieves **1,429 tokens** (~2.1x); under "4x", **748
+  tokens** (~3.9x). These are genuine *ratios* of each row's own original
+  length, not fixed absolute numbers -- every method in the table lands
+  in a tight band around 2x/4x of its own original, not around one fixed
+  token count.
+- **Table 2 (LongBench)** -- a different, heterogeneous benchmark (mixed
+  task types and lengths). Its sections are explicitly labeled `"3,000
+  tokens constraint"` / `"2,000 tokens constraint"` -- absolute numbers,
+  because LongBench's prompts vary so wildly in length that a ratio
+  wouldn't mean the same thing across rows the way it does for NQ's
+  uniform 20-document prompts.
+
+`{"2x": 3000, "4x": 2000}` are Table 2's absolute numbers, misattributed
+to NQ. Confirms the rest of our setup independently, though: our own
+measured average original-prompt length (~2,945 reader tokens) matches
+Table 1's 2,946 almost exactly, so the dataset/tokenizer setup itself was
+never in question -- only which table's target numbers to use.
+
+**Fix**: `config.TOKEN_BUDGETS` (fixed absolute `target_token`) is now
+`config.COMPRESSION_RATES = {"2x": 0.5, "4x": 0.25}`. A new
+`budgets.compute_target_token(budget_name, original_tokens)` computes
+`target_token` fresh per example as `round(original_tokens * rate)`, in
+the READER's tokenizer (same rule as everywhere else in this harness --
+see `budgets.py`'s own docstring), and that per-example value is still
+passed as `target_token` into `compress_prompt()`, never as `rate`
+directly -- passing `rate` would let llmlingua measure against its own
+internal tiktoken tokenizer instead of the reader's, which is exactly the
+mismatch this project's budget-matching rule exists to avoid. Moved the
+computation inside the per-example loop in both `compress_job.py` and
+`layer_sweep.py` (previously computed once per (row, budget) pair,
+outside the loop, when it was still a fixed constant).
+
+**This invalidates the specific budget numbers used in every prior
+"2x"/"4x"-labeled result** -- the fidelity check (2026-08-23) and both
+layer sweeps (n=5 and n=100) all ran under `target_token=3000`, i.e.
+roughly a **1.02x** squeeze on a ~2,945-token original, not a real 2x
+compression. Their *other* findings don't depend on the specific budget
+number and remain valid: the harness's `full_context >= longllmlingua >
+zero_shot` ordering, the five real Modal bugs found and fixed, and the
+layer-choice-barely-matters result (83-84% identical outputs across
+candidate layers) -- that mechanism (greedy threshold-based sentence
+selection being insensitive to small attention-score reorderings) isn't
+specific to what the threshold happened to be. Only the budget *labels*
+and any absolute-token-count claims tied to them are wrong.
+
+Local unit tests (`test_attention_scorer.py`, `test_layer_sweep.py`, 22
+tests) re-run clean, no regressions -- neither suite touches
+`TOKEN_BUDGETS`/`COMPRESSION_RATES` directly. Per the working agreement,
+built and PR'd the fix only -- **no re-run yet**; re-running the fidelity
+check (and likely the layer sweep) under the corrected, genuinely-2x
+budget needs its own specific go-ahead with a cost estimate.

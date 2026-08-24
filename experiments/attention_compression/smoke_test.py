@@ -54,7 +54,7 @@ def run_smoke_test(n_examples: int = 3, budget_name: str = "2x"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--n", type=int, default=3)
-    parser.add_argument("--budget", default="2x", choices=list(config.TOKEN_BUDGETS))
+    parser.add_argument("--budget", default="2x", choices=list(config.COMPRESSION_RATES))
     parser.add_argument(
         "--i-have-approval",
         action="store_true",
