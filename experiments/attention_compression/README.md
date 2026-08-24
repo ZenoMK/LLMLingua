@@ -19,12 +19,17 @@ Reproduction harness validated end to end: `check_model_access.py`,
 `smoke_test.py`, and the full internal-consistency fidelity check have all
 run successfully on Modal (see `FINDINGS.md`'s 2026-08-16 and 2026-08-23
 entries for results). Step 3's attention scorer (`attention_scorer.py`) is
-implemented and unit-tested, and the per-model layer sweep
-(`layer_sweep.py` / `modal_layer_sweep.py`) is built and dry-run verified
-but **not yet run for real** -- `config.ATTENTION_SCORER_LAYERS` is still
-empty, and the scorer isn't wired into `compress_job.py`'s row dispatch
-until it isn't. Per this project's working agreement, every run still
-needs its own specific go-ahead --
+implemented and unit-tested, and the per-model layer sweep has run for
+real at full scale (n=100): `config.ATTENTION_SCORER_LAYERS = {"1.5b":
+13, "7b": 15}`. Worth reading before trusting those numbers, though --
+the sweep found that layer choice barely matters for this method (83-84%
+of examples produce an identical compressed prompt regardless of which
+candidate layer is used; see `FINDINGS.md`'s 2026-08-23 entry for why),
+so the chosen values are "a reasonable pick among statistically
+indistinguishable options," not "the empirically best layer." Still not
+done: wiring the attention scorer into `compress_job.py`'s row dispatch,
+now that there's an actual layer number to wire in. Per this project's
+working agreement, every run still needs its own specific go-ahead --
 scripts that load a model or run generation refuse to run without an
 explicit `--i-have-approval` flag as a reminder of that.
 
@@ -80,16 +85,23 @@ require accepting Meta's license on Hugging Face for your account before
    independently, picking whichever layer gives the highest mean
    `best_subspan_em`. Real run is a seeded random 100-example subset
    (`--limit N` overrides with a deterministic first-N for a cheap
-   pipeline smoke test first -- do that before the real run, same as
-   every other Modal cost in this project). Built and dry-run verified.
-   **Not yet run** -- smoke test (`--limit 5`) ~$0.30-0.70; real run
-   ~$1.50-3, ~2hr wall-clock unbatched. Needed before the attention rows
-   can be wired into `compress_job.py`'s row dispatch.
+   pipeline smoke test first). **Done** (2026-08-23):
+   `config.ATTENTION_SCORER_LAYERS = {"1.5b": 13, "7b": 15}` -- but read
+   the caveat in the Status section above and `FINDINGS.md` before
+   treating those as strong picks; the sweep's real finding is that layer
+   choice barely moves this method's output at all. Real cost: 58.23 min
+   =~ $1.07 for both models (cheaper than the ~$1.50-3 estimate). Along
+   the way, fixed a real CUDA OOM in `compute_token_attention` (see
+   `FINDINGS.md`) -- `output_attentions=True` has no per-layer
+   selectivity and would have hit the same wall in the method sweep below
+   too, not just here.
 5. **`compress_job.py --protocol method_sweep --execute` then
    `read_job.py --execute`** -- all rows (attention 1.5B/7B, LongLLMLingua,
    bm25, sentbert) x both budgets on the fixed ~400-example subset.
    `read_job.py` should be batched before this run (see its docstring) --
    it's ~4,300 generations unbatched, the dominant cost in the project now.
+   Still needs the attention scorer wired into `compress_job.py`'s row
+   dispatch first, now that there's an actual layer number to use.
 
 ## Files
 

@@ -72,9 +72,24 @@ LAYER_SWEEP_N_EXAMPLES = 100
 LAYER_SWEEP_BUDGET = "2x"
 LAYER_SWEEP_SEED = 20260823  # distinct from FIDELITY_CHECK's/METHOD_SWEEP's seeds -- independent draws
 
-# Filled in by hand from layer_sweep.py's output once it's actually run --
-# empty until then. See FINDINGS.md for the run that populates this.
-ATTENTION_SCORER_LAYERS = {}
+# From the real n=100 sweep (2026-08-23, see FINDINGS.md for the full
+# writeup). Flagging honestly rather than dressing this up: at n=100, all
+# 4 candidate layers landed within 0.01 mean EM of each other for BOTH
+# models (1.5b: 0.70 flat across all four; 7b: 0.70-0.71). Digging into
+# the actual per-example compressed prompts (layer_sweep_output/*.jsonl)
+# showed why -- 83-84% of examples produce the literal SAME compressed
+# prompt regardless of which of the 4 layers (spanning 50-100% depth) is
+# used; where they do differ, it's a single sentence swapping near the
+# token-budget boundary, not a different selection. Greedy threshold
+# selection is why: small attention-score differences across layers
+# rarely flip which SET of sentences crosses the budget line. The chosen
+# values below are technically the argmax, but given how close/tied
+# everything was, treat them as "a reasonable pick among statistically
+# indistinguishable options," not "the best layer" in any strong sense.
+ATTENTION_SCORER_LAYERS = {
+    "1.5b": 13,  # 50% depth of 28 layers; tied with 17/20/27, all at 0.70 mean EM
+    "7b": 15,  # 50% depth of 32 layers; 0.71 mean EM, within 0.01 of 20/23/31
+}
 
 
 # ---------------------------------------------------------------------------
