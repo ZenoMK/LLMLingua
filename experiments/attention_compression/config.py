@@ -72,23 +72,24 @@ LAYER_SWEEP_N_EXAMPLES = 100
 LAYER_SWEEP_BUDGET = "2x"
 LAYER_SWEEP_SEED = 20260823  # distinct from FIDELITY_CHECK's/METHOD_SWEEP's seeds -- independent draws
 
-# From the real n=100 sweep (2026-08-23, see FINDINGS.md for the full
-# writeup). Flagging honestly rather than dressing this up: at n=100, all
-# 4 candidate layers landed within 0.01 mean EM of each other for BOTH
-# models (1.5b: 0.70 flat across all four; 7b: 0.70-0.71). Digging into
-# the actual per-example compressed prompts (layer_sweep_output/*.jsonl)
-# showed why -- 83-84% of examples produce the literal SAME compressed
-# prompt regardless of which of the 4 layers (spanning 50-100% depth) is
-# used; where they do differ, it's a single sentence swapping near the
-# token-budget boundary, not a different selection. Greedy threshold
-# selection is why: small attention-score differences across layers
-# rarely flip which SET of sentences crosses the budget line. The chosen
-# values below are technically the argmax, but given how close/tied
-# everything was, treat them as "a reasonable pick among statistically
-# indistinguishable options," not "the best layer" in any strong sense.
+# From the real n=100 sweep, RE-RUN on 2026-08-25 under the corrected
+# genuine-2x budget (see FINDINGS.md) -- SUPERSEDES the original
+# 2026-08-23 sweep, which ran under a budget bug (target_token=3000, a
+# ~1.15x squeeze on a ~2,945-token original, barely compressing
+# anything). That run found all 4 candidate layers tied within 0.01 mean
+# EM and concluded "layer choice barely matters." Re-running the exact
+# same sweep under a REAL ~2x budget overturned that: layers now spread
+# 0.65-0.73 (1.5b) and 0.52-0.70 (7b), and 0/100 examples produce an
+# identical compressed prompt across layers for either model (vs.
+# 83-84% identical before). The "barely matters" conclusion was an
+# artifact of the loose budget leaving almost nothing to cut -- under a
+# real budget tight enough to force real selection, which layer's
+# attention pattern ranks the sentences genuinely changes what survives,
+# and that has real downstream effect on accuracy. Full writeup and
+# per-layer numbers in FINDINGS.md's 2026-08-25 entry.
 ATTENTION_SCORER_LAYERS = {
-    "1.5b": 13,  # 50% depth of 28 layers; tied with 17/20/27, all at 0.70 mean EM
-    "7b": 15,  # 50% depth of 32 layers; 0.71 mean EM, within 0.01 of 20/23/31
+    "1.5b": 17,  # 0.73 mean EM, clear best of [13, 17, 20, 27] = [0.65, 0.73, 0.65, 0.70]
+    "7b": 20,  # 0.70 mean EM, clear best of [15, 20, 23, 31] = [0.69, 0.70, 0.65, 0.52]
 }
 
 
