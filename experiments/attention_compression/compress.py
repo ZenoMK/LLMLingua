@@ -3,11 +3,17 @@
 # compress_prompt's normal result dict unchanged. All method-specific flags
 # come from config.py, so every row's settings are traceable to one place
 # (see NOTES.md for what each flag does and why it's set that way).
+#
+# compress_attention is the one exception: it takes a (model, tokenizer,
+# layer) instead of a PromptCompressor, since it's our own method, not a
+# llmlingua rank_method -- see its own docstring.
 from typing import List
 
 from llmlingua import PromptCompressor
 
+import attention_scorer
 import config
+from budgets import count_reader_tokens
 
 
 def compress_longllmlingua(
@@ -64,14 +70,39 @@ def compress_sentbert(
     )
 
 
-def compress_attention(*args, **kwargs):
-    """Our method: query-to-context attention scorer, sentence-level greedy
-    selection. Not implemented here -- lands in the Step 3 PR (separate
-    scorer module + per-model layer sweep). Not registered in ROW_FUNCS
-    yet: its real signature will need a model-size/layer selector that the
-    other rows don't take, so compress_job.py will dispatch to it directly
-    once it exists rather than forcing it into this shape prematurely."""
-    raise NotImplementedError("Attention scorer lands in the Step 3 PR.")
+def join_compressed_prompt(instruction: str, compressed_body: str, question: str) -> str:
+    """Matches how compress_prompt itself joins instruction/body/question
+    (prompt_compressor.py: "\\n\\n".join([instruction, compressed_prompt,
+    question])) -- for rows (compress_attention here, layer_sweep.py's own
+    candidate compression) that only produce a compressed body string, not
+    compress_prompt's full return dict, so they still get the same final
+    assembly every other row gets, for a fair comparison."""
+    return "\n\n".join([instruction, compressed_body, question])
+
+
+def compress_attention(
+    model,
+    tokenizer,
+    layer: int,
+    context: List[str],
+    instruction: str,
+    question: str,
+    target_token: int,
+) -> dict:
+    """Our method: one-pass query-to-context attention scoring, sentence-
+    level greedy selection, at a single fixed layer (config.
+    ATTENTION_SCORER_LAYERS, picked by layer_sweep.py -- see FINDINGS.md).
+    Needs a real model/tokenizer already loaded with
+    attn_implementation="eager" (see attention_scorer.compute_token_attention
+    for why). Not a llmlingua rank_method, so this doesn't take a
+    PromptCompressor like the other rows -- compress_job.py dispatches to
+    this directly rather than via ROW_FUNCS."""
+    _, offsets, bases, scores_by_layer = attention_scorer.compute_token_attention(
+        model, tokenizer, context, question, [layer]
+    )
+    sentences = attention_scorer.sentences_with_scores(context, offsets, bases, scores_by_layer[layer])
+    compressed_body = attention_scorer.select_sentences(sentences, target_token, count_reader_tokens)
+    return {"compressed_prompt": join_compressed_prompt(instruction, compressed_body, question)}
 
 
 ROW_FUNCS = {

@@ -69,15 +69,6 @@ def candidate_layers(num_hidden_layers: int) -> List[int]:
     return layers
 
 
-def _build_full_prompt(instruction: str, compressed_body: str, question: str) -> str:
-    """Matches how compress_prompt itself joins instruction/body/question
-    (prompt_compressor.py: "\\n\\n".join([instruction, compressed_prompt,
-    question])) -- attention_scorer.select_sentences only returns the
-    compressed body, so this reproduces the same final assembly every
-    other row gets, for a fair comparison."""
-    return "\n\n".join([instruction, compressed_body, question])
-
-
 def load_layer_sweep_examples(limit=None) -> List["data.NQExample"]:
     """Same shape as compress_job.py's load_examples(): with `limit`,
     deterministic first-N (for a cheap smoke test of the pipeline);
@@ -102,7 +93,7 @@ def compress_candidates(model_size: str, limit=None) -> List[dict]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from budgets import budget_report, compute_target_token, count_reader_tokens
-    from compress import compress_full_context
+    from compress import compress_full_context, join_compressed_prompt
 
     model_name = config.ATTENTION_SCORER_MODELS[model_size]
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -133,7 +124,7 @@ def compress_candidates(model_size: str, limit=None) -> List[dict]:
             for layer in layers:
                 sentences = attention_scorer.sentences_with_scores(ex.context, offsets, bases, scores_by_layer[layer])
                 compressed_body = attention_scorer.select_sentences(sentences, target_token, count_reader_tokens)
-                full_prompt = _build_full_prompt(ex.instruction, compressed_body, ex.question)
+                full_prompt = join_compressed_prompt(ex.instruction, compressed_body, ex.question)
                 report = budget_report(config.LAYER_SWEEP_BUDGET, origin_tokens, count_reader_tokens(full_prompt))
                 records.append(
                     {

@@ -92,6 +92,17 @@ ATTENTION_SCORER_LAYERS = {
     "7b": 20,  # 0.70 mean EM, clear best of [15, 20, 23, 31] = [0.69, 0.70, 0.65, 0.52]
 }
 
+# Row name -> model size, for compress_job.py's row dispatch. Attention rows
+# don't go through PromptCompressor/ROW_COMPRESSOR_MODEL like the other rows
+# -- they need a real (model, tokenizer, layer) loaded via
+# ATTENTION_SCORER_MODELS/ATTENTION_SCORER_LAYERS instead, so compress_job.py
+# checks membership in this dict to route to that separate loading path.
+ATTENTION_ROW_MODEL_SIZE = {
+    "attention_1.5b": "1.5b",
+    "attention_7b": "7b",
+}
+ATTENTION_ROWS = list(ATTENTION_ROW_MODEL_SIZE)
+
 
 # ---------------------------------------------------------------------------
 # Compression pipeline settings, per method row
@@ -148,6 +159,12 @@ SENTBERT_BASELINE_KWARGS = dict(
 )
 
 BASELINE_ROWS = ["bm25", "sentbert", "longllmlingua"]
+
+# All method_sweep rows: our method (both scorer sizes) plus every baseline
+# -- see METHOD_SWEEP's label below. ATTENTION_ROWS first so a real run's
+# progress output shows our own method before the baselines, not because
+# order affects the results.
+METHOD_SWEEP_ROWS = ATTENTION_ROWS + BASELINE_ROWS
 
 
 # ---------------------------------------------------------------------------
