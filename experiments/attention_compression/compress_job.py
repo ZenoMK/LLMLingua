@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 
 import torch
 from llmlingua import PromptCompressor
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import compress
 import config
@@ -30,12 +31,38 @@ from budgets import budget_report, compute_target_token, count_reader_tokens
 # rank_method, so we still have to give it something. Using the smallest
 # model we already need elsewhere (the 1.5B attention scorer) minimizes
 # the waste rather than loading a 7B model just to leave it idle.
+# attention_1.5b / attention_7b aren't here -- they don't go through
+# PromptCompressor at all, see _load_row_backbone below.
 ROW_COMPRESSOR_MODEL = {
     "longllmlingua": config.LONGLLMLINGUA_COMPRESSOR_MODEL,
     "bm25": config.ATTENTION_SCORER_MODELS["1.5b"],
     "sentbert": config.ATTENTION_SCORER_MODELS["1.5b"],
-    # attention_1.5b / attention_7b: Step 3, not via PromptCompressor at all.
 }
+
+
+def _load_row_backbone(row: str):
+    """Returns (compressor_or_tuple, model_name) for `row`. Attention rows
+    load a real (model, tokenizer, layer) via ATTENTION_SCORER_MODELS/
+    ATTENTION_SCORER_LAYERS -- attn_implementation="eager" is required for
+    compute_token_attention's forward hooks to have anything to capture
+    (see attention_scorer.py). Every other row loads (or skips, for
+    full_context/zero_shot) a PromptCompressor as before."""
+    if row in config.ATTENTION_ROW_MODEL_SIZE:
+        model_size = config.ATTENTION_ROW_MODEL_SIZE[row]
+        model_name = config.ATTENTION_SCORER_MODELS[model_size]
+        layer = config.ATTENTION_SCORER_LAYERS[model_size]
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda",
+            attn_implementation="eager",
+        )
+        model.eval()
+        return (model, tokenizer, layer), model_name
+    model_name = ROW_COMPRESSOR_MODEL.get(row)
+    compressor = PromptCompressor(model_name=model_name) if model_name else None
+    return compressor, model_name
 
 
 def resolve_protocol(protocol: str):
@@ -46,7 +73,7 @@ def resolve_protocol(protocol: str):
 
 def resolve_rows_and_budgets(protocol: str, rows: Optional[List[str]], budgets_list: Optional[List[str]]):
     _, is_fidelity = resolve_protocol(protocol)
-    rows = rows or (config.FIDELITY_CHECK_ROWS if is_fidelity else config.BASELINE_ROWS)
+    rows = rows or (config.FIDELITY_CHECK_ROWS if is_fidelity else config.METHOD_SWEEP_ROWS)
     budgets_list = budgets_list or ([config.FIDELITY_CHECK_BUDGET] if is_fidelity else list(config.COMPRESSION_RATES))
     return rows, budgets_list
 
@@ -73,6 +100,11 @@ def _compressed_prompt_for_row(compressor, row: str, ex, target_token: Optional[
         return compress.compress_full_context(ex.context, ex.instruction, ex.question)
     if row == "zero_shot":
         return compress.compress_zero_shot(ex.instruction, ex.question)
+    if row in config.ATTENTION_ROW_MODEL_SIZE:
+        model, tokenizer, layer = compressor
+        return compress.compress_attention(
+            model, tokenizer, layer, ex.context, ex.instruction, ex.question, target_token
+        )["compressed_prompt"]
     fn = compress.ROW_FUNCS[row]
     return fn(compressor, ex.context, ex.instruction, ex.question, target_token)["compressed_prompt"]
 
@@ -88,8 +120,7 @@ def run_compression(
     Returns records shaped for read_job.py. Never loads a reader."""
     records = []
     for row in rows:
-        model_name = ROW_COMPRESSOR_MODEL.get(row)
-        compressor = PromptCompressor(model_name=model_name) if model_name else None
+        compressor, model_name = _load_row_backbone(row)
         try:
             budget_names = [None] if row in ("full_context", "zero_shot") else budgets_list
             for ex in examples:

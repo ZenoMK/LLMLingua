@@ -17,21 +17,30 @@ sample sizes -- if a setting needs to change, change it there.
 
 Reproduction harness validated end to end: `check_model_access.py`,
 `smoke_test.py`, and the full internal-consistency fidelity check have all
-run successfully on Modal (see `FINDINGS.md`'s 2026-08-16 and 2026-08-23
-entries for results). Step 3's attention scorer (`attention_scorer.py`) is
-implemented and unit-tested, and the per-model layer sweep has run for
-real at full scale (n=100): `config.ATTENTION_SCORER_LAYERS = {"1.5b":
-13, "7b": 15}`. Worth reading before trusting those numbers, though --
-the sweep found that layer choice barely matters for this method (83-84%
-of examples produce an identical compressed prompt regardless of which
-candidate layer is used; see `FINDINGS.md`'s 2026-08-23 entry for why),
-so the chosen values are "a reasonable pick among statistically
-indistinguishable options," not "the empirically best layer." Still not
-done: wiring the attention scorer into `compress_job.py`'s row dispatch,
-now that there's an actual layer number to wire in. Per this project's
-working agreement, every run still needs its own specific go-ahead --
-scripts that load a model or run generation refuse to run without an
-explicit `--i-have-approval` flag as a reminder of that.
+run successfully on Modal (see `FINDINGS.md`'s 2026-08-16 entry for the
+smoke test, and its 2026-08-24 entry for the fidelity check under the
+corrected budget below). Step 3's attention scorer (`attention_scorer.py`)
+is implemented and unit-tested; the per-model layer sweep has run for real
+at full scale (n=100): `config.ATTENTION_SCORER_LAYERS = {"1.5b": 17,
+"7b": 20}`.
+
+Budget note: `config.COMPRESSION_RATES` ("2x"/"4x") are genuine
+per-example compression ratios, computed fresh per example in the
+reader's tokenizer -- an earlier version had these as fixed absolute
+token counts, misattributed from the paper's LongBench table instead of
+its NaturalQuestions one (see `FINDINGS.md`'s 2026-08-24 entry). Under
+the corrected budget, the fidelity check's compressed condition ties
+full-context exactly (both 0.650, vs. trailing by 3 points under the old
+loose budget), and the layer sweep's earlier "layer choice barely
+matters" conclusion did not hold up -- see the 2026-08-25 entry for the
+re-run that overturned it and the layer numbers above.
+
+The attention scorer is now wired into `compress_job.py`'s row dispatch
+(`attention_1.5b`/`attention_7b` rows, `config.METHOD_SWEEP_ROWS`) --
+not yet run for real. Per this project's working agreement, every run
+still needs its own specific go-ahead -- scripts that load a model or
+run generation refuse to run without an explicit `--i-have-approval`
+flag as a reminder of that.
 
 ## Pipeline shape: two decoupled jobs
 
@@ -78,30 +87,35 @@ require accepting Meta's license on Hugging Face for your account before
    with sane magnitudes. Replaces the earlier plan to reproduce the paper's
    own published (GPT-3.5-reader) numbers, which isn't a valid comparison
    now that we're on a different reader -- see `config.FIDELITY_CHECK`.
-   **Done** (2026-08-23): `full_context=0.650 >= longllmlingua@2x=0.620 >
-   zero_shot=0.570` -- ordering holds, harness validated.
+   **Done** (2026-08-24, re-run under the corrected budget --see
+   `FINDINGS.md`): `full_context=0.650 >= longllmlingua@2x=0.650 >
+   zero_shot=0.570` -- compressed ties full-context exactly; ordering
+   holds, harness validated.
 4. **`modal_layer_sweep.py`** -- per-model best attention layer for
    `attention_scorer.py`: ~4 late-layer candidates, per scorer size
    independently, picking whichever layer gives the highest mean
    `best_subspan_em`. Real run is a seeded random 100-example subset
    (`--limit N` overrides with a deterministic first-N for a cheap
-   pipeline smoke test first). **Done** (2026-08-23):
-   `config.ATTENTION_SCORER_LAYERS = {"1.5b": 13, "7b": 15}` -- but read
-   the caveat in the Status section above and `FINDINGS.md` before
-   treating those as strong picks; the sweep's real finding is that layer
-   choice barely moves this method's output at all. Real cost: 58.23 min
-   =~ $1.07 for both models (cheaper than the ~$1.50-3 estimate). Along
-   the way, fixed a real CUDA OOM in `compute_token_attention` (see
-   `FINDINGS.md`) -- `output_attentions=True` has no per-layer
-   selectivity and would have hit the same wall in the method sweep below
-   too, not just here.
+   pipeline smoke test first). **Done** (2026-08-25, re-run under the
+   corrected budget -- see `FINDINGS.md`):
+   `config.ATTENTION_SCORER_LAYERS = {"1.5b": 17, "7b": 20}`. Under the
+   corrected (genuinely ~2x) budget, layer choice does matter -- 1.5b
+   spreads 0.65-0.73 mean EM across candidates, 7b spreads 0.52-0.70; 0/100
+   examples produce an identical compressed prompt across layers for
+   either model. This overturned the original 2026-08-23 sweep's "layer
+   barely matters" conclusion, which ran under the same budget bug the
+   fidelity check re-run above fixed. Real cost: 54.23 min =~ $0.99 for
+   both models.
 5. **`compress_job.py --protocol method_sweep --execute` then
    `read_job.py --execute`** -- all rows (attention 1.5B/7B, LongLLMLingua,
    bm25, sentbert) x both budgets on the fixed ~400-example subset.
    `read_job.py` should be batched before this run (see its docstring) --
    it's ~4,300 generations unbatched, the dominant cost in the project now.
-   Still needs the attention scorer wired into `compress_job.py`'s row
-   dispatch first, now that there's an actual layer number to use.
+   The attention scorer is now wired into `compress_job.py`'s row dispatch
+   (`attention_1.5b`/`attention_7b`, via `_load_row_backbone` --
+   `compress.compress_attention` at the locked-in layer from step 4). Not
+   yet run for real -- a cheap `--limit N` smoke test first is the natural
+   next step, same pattern as steps 3 and 4 above.
 
 ## Files
 
@@ -112,7 +126,7 @@ require accepting Meta's license on Hugging Face for your account before
 | `metrics.py` | Re-exports `best_subspan_em` from `experiments/llmlingua2/evaluation/metrics.py` (sys.path trick, no logic duplicated). |
 | `budgets.py` | Token counting in the reader's own HF tokenizer, achieved-vs-target ratio reporting. |
 | `reader.py` | Local HF reader wrapper (load, generate, unload) -- `meta-llama/Llama-3.1-8B-Instruct`, greedy decoding. |
-| `compress.py` | One wrapper per comparison row (`longllmlingua`, `bm25`, `sentbert`; `attention` stubbed for Step 3), plus the `full_context`/`zero_shot` pseudo-conditions used by the fidelity check. |
+| `compress.py` | One wrapper per comparison row (`longllmlingua`, `bm25`, `sentbert` via `ROW_FUNCS`; `compress_attention` dispatched to directly by `compress_job.py`, since it takes a `(model, tokenizer, layer)` instead of a `PromptCompressor`), plus the `full_context`/`zero_shot` pseudo-conditions used by the fidelity check. |
 | `attention_scorer.py` | Step 3's method: query-to-context attention scoring. Model-independent sentence aggregation/selection (unit-tested); the forward pass itself needs a real model, exercised by `layer_sweep.py`. |
 | `test_attention_scorer.py` | Unit tests for `attention_scorer.py`'s model-independent functions -- synthetic inputs, no GPU needed. `python test_attention_scorer.py`. |
 | `layer_sweep.py` / `modal_layer_sweep.py` | Per-model layer sweep (order-of-operations step 4) and its Modal entrypoint. `candidate_layers`/`pick_best_layer` are pure Python and unit-tested (`test_layer_sweep.py`); the actual sweep needs a real model. |
