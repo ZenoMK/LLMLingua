@@ -16,16 +16,17 @@ Every entry should be config-labeled: model, chosen layer (once relevant),
 budget, reader, benchmark/slice -- so a number is traceable without having
 to guess what settings produced it.
 
-**Cumulative spend so far: ~$4-5.50** (Modal GPU-hours only, no paid API
+**Cumulative spend so far: ~$5-6.50** (Modal GPU-hours only, no paid API
 anywhere in the pipeline; updated after every approved run). Precise
 where `modal app list`'s start/stop timestamps are still available: the
-original fidelity check (32.35 min =~ $0.59), the real n=100 layer sweep
-(58.23 min =~ $1.07), and the fidelity check re-run under the corrected
-2x budget (26.13 min =~ $0.48). Reasoned/rough for the rest (2026-08-16
-smoke-test debugging session, the two `--limit 5`/`--limit 10`
-validation runs) -- Modal's ephemeral `modal run` apps don't keep long
-listing history, so exact timestamps for those aren't recoverable after
-the fact; still comfortably under the $50 project cap by a wide margin
+original fidelity check (32.35 min =~ $0.59), the original n=100 layer
+sweep (58.23 min =~ $1.07), the fidelity check re-run under the corrected
+2x budget (26.13 min =~ $0.48), and the layer sweep re-run under the
+corrected 2x budget (54.23 min =~ $0.99). Reasoned/rough for the rest
+(2026-08-16 smoke-test debugging session, the two `--limit 5`/`--limit
+10` validation runs) -- Modal's ephemeral `modal run` apps don't keep
+long listing history, so exact timestamps for those aren't recoverable
+after the fact; still comfortably under the $50 project cap by a wide margin
 either way.
 
 ## Log
@@ -693,3 +694,49 @@ got it right, 9 where longllmlingua@2x alone got it right** -- 65
 correct either way, but different examples in each case. Compression is
 genuinely helping on some and hurting on others, not behaving
 identically; they happen to net to the same score at this sample size.
+
+### 2026-08-25 -- layer sweep re-run: "layer barely matters" was itself a budget-bug artifact
+
+Same logic as the fidelity check re-run -- if the old fixed-3000 budget
+was too loose to be a real test, the layer sweep's 2026-08-23 conclusion
+("all 4 candidate layers tied, layer choice barely matters") was built
+on the same loose budget and needed re-checking. Re-ran
+`modal_layer_sweep.py --i-have-approval` for real, both models, same
+n=100 seeded subset, same 4 candidate layers each, now under
+`COMPRESSION_RATES["2x"]=0.5`. **Cost: 54.23 min A10G =~ $0.99** --
+in line with the estimate, slightly cheaper than the original run.
+
+**The layers are not tied anymore:**
+
+| Model | Layers (by depth) | Mean EM |
+|---|---|---|
+| 1.5b (Qwen2.5-1.5B) | 13 / **17** / 20 / 27 | 0.65 / **0.73** / 0.65 / 0.70 |
+| 7b (Llama-2-7B-Chat) | 15 / **20** / 23 / 31 | 0.69 / **0.70** / 0.65 / 0.52 |
+
+1.5b spreads 0.65-0.73 (8 points); 7b spreads 0.52-0.70 (18 points, with
+the deepest candidate layer, 31, notably the worst). Both are clear,
+non-trivial spreads, nothing like the <=0.01 tie from the 2026-08-23 run.
+
+**Checked why, the same way as the original sweep did**: counted how
+often the 4 layers produce the literal same compressed prompt per
+example. Previously 83-84% identical. Now: **0/100 examples identical
+across all 4 layers, for either model.** The mechanism from the
+2026-08-23 entry ("small attention-score differences across layers
+rarely flip which SET of sentences crosses the budget line") was correct
+as reasoning, but it was reasoning about a budget that left almost
+nothing to cut (~1.15x, target_token=3000 against a ~2,945-token
+original) -- there was no room for layer choice to matter because there
+was barely any compression happening at all. Under a real ~2x budget,
+which layer's attention pattern ranks the sentences changes what
+actually gets kept on every single example, and that shows up as a real
+accuracy spread.
+
+**This retracts the "barely matters" framing from 2026-08-23**, not the
+harness validation or the OOM fix from that entry (those stand on their
+own -- the hook mechanics, the sampling-bug fix, and the two-phase
+compress/evaluate split all worked correctly regardless of budget). Only
+the substantive conclusion drawn from the numbers -- and the layer
+choice locked into `config.ATTENTION_SCORER_LAYERS` from PR #13 -- were
+downstream of the same budget bug documented in the 2026-08-24 entry.
+Re-locked to the new argmax: `{"1.5b": 17, "7b": 20}`, replacing
+`{"1.5b": 13, "7b": 15}`.
